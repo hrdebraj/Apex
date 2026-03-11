@@ -1,0 +1,30 @@
+server:
+  grpc_addr: "0.0.0.0:50051"
+  http_addr: "0.0.0.0:8443"
+  tls:
+    enabled: false
+    cert_file: ""
+    key_file: ""
+    ca_file: ""
+  agent_dir: "/home/debraj/Apex/agent" 
+
+database:
+  postgres:
+    host: "localhost"
+    port: 5432
+    user: "apex"
+    password: "apex_secret"
+    dbname: "apex"
+    sslmode: "disable"
+  redis:
+    addr: "localhost:6379"
+    password: ""
+    db: 0
+
+auth:
+  jwt_secret: "change-me-in-production-use-a-real-secret"
+  token_expiry: "24h"
+
+logging:
+  level: "debug"
+  pretty: true

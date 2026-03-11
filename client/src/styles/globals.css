@@ -1,0 +1,81 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: #2a2a3a transparent;
+  }
+
+  *::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  *::-webkit-scrollbar-thumb {
+    background-color: #2a2a3a;
+    border-radius: 3px;
+  }
+
+  ::selection {
+    background-color: rgba(0, 212, 170, 0.25);
+  }
+}
+
+@layer components {
+  .apex-card {
+    @apply bg-apex-surface border border-apex-border rounded-lg;
+  }
+
+  .apex-btn {
+    @apply px-4 py-2 rounded-md font-medium text-sm transition-all duration-150;
+  }
+
+  .apex-btn-primary {
+    @apply apex-btn bg-apex-accent text-apex-bg hover:bg-apex-accent-dim;
+  }
+
+  .apex-btn-ghost {
+    @apply apex-btn text-apex-muted hover:text-apex-text hover:bg-apex-hover;
+  }
+
+  .apex-btn-danger {
+    @apply apex-btn bg-apex-danger/10 text-apex-danger hover:bg-apex-danger/20;
+  }
+
+  .apex-input {
+    @apply w-full px-3 py-2 bg-apex-bg border border-apex-border rounded-md text-apex-text placeholder-apex-muted
+           focus:outline-none focus:border-apex-accent focus:ring-1 focus:ring-apex-accent/30
+           text-sm font-mono transition-colors;
+  }
+
+  .apex-select {
+    @apply apex-input appearance-none cursor-pointer pr-8
+           bg-apex-bg text-apex-text;
+  }
+
+  .apex-select option {
+    @apply bg-apex-surface text-apex-text;
+  }
+
+  .apex-badge {
+    @apply inline-flex items-center px-2 py-0.5 rounded text-xs font-medium;
+  }
+
+  .apex-badge-active {
+    @apply apex-badge bg-apex-accent/15 text-apex-accent;
+  }
+
+  .apex-badge-inactive {
+    @apply apex-badge bg-apex-muted/15 text-apex-muted;
+  }
+
+  .apex-badge-danger {
+    @apply apex-badge bg-apex-danger/15 text-apex-danger;
+  }
+}

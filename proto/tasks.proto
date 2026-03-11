@@ -1,0 +1,48 @@
+syntax = "proto3";
+
+package apex;
+
+option go_package = "apex/teamserver/pkg/proto/apexpb";
+
+import "common.proto";
+
+// ─── Task Queue & Execution ──────────────────────────────────
+
+service TaskService {
+  rpc CreateTask  (CreateTaskRequest)  returns (Task);
+  rpc GetTask     (GetTaskRequest)     returns (Task);
+  rpc ListTasks   (ListTasksRequest)   returns (ListTasksResponse);
+  rpc CancelTask  (CancelTaskRequest)  returns (Task);
+
+  // Live stream of task results as agents return output
+  rpc StreamTaskResults (StreamTaskResultsRequest) returns (stream TaskResult);
+}
+
+message CreateTaskRequest {
+  string agent_id = 1;
+  string command  = 2;
+  bytes  arguments = 3;
+}
+
+message GetTaskRequest {
+  string id = 1;
+}
+
+message ListTasksRequest {
+  string agent_id = 1;  // filter by agent (empty = all)
+  int32  limit    = 2;
+  int32  offset   = 3;
+}
+
+message ListTasksResponse {
+  repeated Task tasks = 1;
+  int32         total = 2;
+}
+
+message CancelTaskRequest {
+  string id = 1;
+}
+
+message StreamTaskResultsRequest {
+  string agent_id = 1;  // subscribe to results for a specific agent (empty = all)
+}

@@ -1,0 +1,102 @@
+syntax = "proto3";
+
+package apex;
+
+option go_package = "apex/teamserver/pkg/proto/apexpb";
+
+import "google/protobuf/timestamp.proto";
+
+// ─── Shared enums ────────────────────────────────────────────
+
+enum Status {
+  STATUS_UNKNOWN  = 0;
+  STATUS_ACTIVE   = 1;
+  STATUS_INACTIVE = 2;
+  STATUS_ERROR    = 3;
+}
+
+enum OperatorRole {
+  OPERATOR_ROLE_UNKNOWN  = 0;
+  OPERATOR_ROLE_ADMIN    = 1;
+  OPERATOR_ROLE_OPERATOR = 2;
+  OPERATOR_ROLE_READONLY = 3;
+}
+
+enum ListenerProtocol {
+  LISTENER_PROTOCOL_UNKNOWN = 0;
+  LISTENER_PROTOCOL_HTTP    = 1;
+  LISTENER_PROTOCOL_HTTPS   = 2;
+  LISTENER_PROTOCOL_DNS     = 3;
+  LISTENER_PROTOCOL_TCP     = 4;
+  LISTENER_PROTOCOL_SMB     = 5;
+}
+
+enum TaskStatus {
+  TASK_STATUS_UNKNOWN   = 0;
+  TASK_STATUS_QUEUED    = 1;
+  TASK_STATUS_DELIVERED = 2;
+  TASK_STATUS_COMPLETED = 3;
+  TASK_STATUS_FAILED    = 4;
+  TASK_STATUS_CANCELLED = 5;
+}
+
+// ─── Shared messages ─────────────────────────────────────────
+
+message Operator {
+  string                    id         = 1;
+  string                    username   = 2;
+  OperatorRole              role       = 3;
+  google.protobuf.Timestamp created_at = 4;
+  google.protobuf.Timestamp last_login = 5;
+}
+
+message Listener {
+  string                    id           = 1;
+  string                    name         = 2;
+  ListenerProtocol          protocol     = 3;
+  string                    bind_address = 4;
+  int32                     bind_port    = 5;
+  Status                    status       = 6;
+  map<string, string>       config       = 7;
+  google.protobuf.Timestamp created_at   = 8;
+}
+
+message Agent {
+  string                    id           = 1;
+  string                    hostname     = 2;
+  string                    username     = 3;
+  string                    os           = 4;
+  string                    arch         = 5;
+  int32                     pid          = 6;
+  string                    process_name = 7;
+  string                    internal_ip  = 8;
+  string                    external_ip  = 9;
+  int32                     sleep        = 10;
+  int32                     jitter       = 11;
+  string                    listener_id  = 12;
+  google.protobuf.Timestamp first_seen   = 13;
+  google.protobuf.Timestamp last_seen    = 14;
+  Status                    status       = 15;
+}
+
+message Task {
+  string                    id           = 1;
+  string                    agent_id     = 2;
+  string                    operator_id  = 3;
+  string                    command      = 4;
+  bytes                     arguments    = 5;
+  TaskStatus                status       = 6;
+  google.protobuf.Timestamp created_at   = 7;
+  google.protobuf.Timestamp completed_at = 8;
+}
+
+message TaskResult {
+  string                    task_id   = 1;
+  string                    agent_id  = 2;
+  bytes                     output    = 3;
+  bool                      success   = 4;
+  string                    error     = 5;
+  google.protobuf.Timestamp timestamp = 6;
+}
+
+message Empty {}

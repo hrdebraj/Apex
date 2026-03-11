@@ -1,0 +1,16 @@
+[Unit]
+Description=Apex C2 Team Server
+After=network.target
+
+[Service]
+Type=simple
+# Edit paths below for your install (replace /home/debraj/Apex)
+WorkingDirectory=/home/debraj/Apex
+ExecStartPre=/bin/sh -c 'docker compose -f /home/debraj/Apex/deployments/docker-compose.yml up -d || podman compose -f /home/debraj/Apex/deployments/docker-compose.yml up -d'
+ExecStartPre=/bin/sleep 5
+ExecStart=/home/debraj/Apex/bin/teamserver -config /home/debraj/Apex/teamserver/config.yaml
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

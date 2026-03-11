@@ -1,0 +1,56 @@
+syntax = "proto3";
+
+package apex;
+
+option go_package = "apex/teamserver/pkg/proto/apexpb";
+
+import "common.proto";
+
+// ─── Listener Management ─────────────────────────────────────
+
+service ListenerService {
+  rpc CreateListener (CreateListenerRequest)  returns (Listener);
+  rpc GetListener    (GetListenerRequest)     returns (Listener);
+  rpc ListListeners  (Empty)                  returns (ListListenersResponse);
+  rpc StartListener  (StartListenerRequest)   returns (Listener);
+  rpc StopListener   (StopListenerRequest)    returns (Listener);
+  rpc DeleteListener (DeleteListenerRequest)  returns (Empty);
+
+  // Real-time listener status events
+  rpc StreamListenerEvents (Empty) returns (stream ListenerEvent);
+}
+
+message CreateListenerRequest {
+  string              name         = 1;
+  ListenerProtocol    protocol     = 2;
+  string              bind_address = 3;
+  int32               bind_port    = 4;
+  map<string, string> config       = 5;
+}
+
+message GetListenerRequest {
+  string id = 1;
+}
+
+message ListListenersResponse {
+  repeated Listener listeners = 1;
+}
+
+message StartListenerRequest {
+  string id = 1;
+}
+
+message StopListenerRequest {
+  string id = 1;
+}
+
+message DeleteListenerRequest {
+  string id = 1;
+}
+
+message ListenerEvent {
+  string   listener_id = 1;
+  string   event_type  = 2; // "started", "stopped", "error", "agent_checkin"
+  string   message     = 3;
+  Listener listener    = 4;
+}

@@ -1,0 +1,12 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nicklasxyz/tauri/v2/crates/tauri/permissions/schemas/capabilities.schema.json",
+  "identifier": "default",
+  "description": "Default capabilities for the Apex client",
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "core:default",
+    "shell:allow-open"
+  ]
+}

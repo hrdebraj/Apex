@@ -1,0 +1,52 @@
+name: "default"
+description: "Default Apex profile - mimics standard web API traffic"
+
+sleep:
+  interval: 60
+  jitter: 15
+
+user_agents:
+  - "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+  - "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0"
+  - "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15"
+
+http:
+  get:
+    uri:
+      - "/api/v2/analytics"
+      - "/api/v2/telemetry"
+      - "/cdn/assets/config.json"
+      - "/health"
+    headers:
+      Accept: "application/json"
+      Accept-Language: "en-US,en;q=0.9"
+      Cache-Control: "no-cache"
+    client:
+      metadata:
+        header: "X-Request-Token"
+        base64: true
+    server:
+      output:
+        content_type: "application/json"
+        prepend: '{"status":"ok","data":"'
+        append: '"}'
+        base64: true
+
+  post:
+    uri:
+      - "/api/v2/events"
+      - "/api/v2/metrics"
+      - "/cdn/upload"
+    headers:
+      Content-Type: "application/json"
+      Accept: "application/json"
+    client:
+      output:
+        content_type: "application/json"
+        prepend: '{"payload":"'
+        append: '"}'
+        base64: true
+    server:
+      output:
+        content_type: "application/json"
+        prepend: '{"status":"received"}'

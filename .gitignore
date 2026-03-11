@@ -1,0 +1,41 @@
+# Binaries
+bin/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Go
+teamserver/vendor/
+
+# Node
+client/node_modules/
+client/dist/
+client/.vite/
+
+# Rust / Tauri
+client/src-tauri/target/
+
+# Environment & secrets
+.env
+*.pem
+*.key
+*.crt
+config.local.yaml
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker volumes
+pgdata/
+redisdata/
+
+# Runtime data (BOF uploads, etc.)
+data/

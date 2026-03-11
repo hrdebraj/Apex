@@ -1,0 +1,51 @@
+name: "microsoft-graph"
+description: "Mimics Microsoft Graph API traffic - blends with O365 environments"
+
+sleep:
+  interval: 45
+  jitter: 25
+
+user_agents:
+  - "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36 Edg/125.0.0.0"
+
+http:
+  get:
+    uri:
+      - "/v1.0/me/messages"
+      - "/v1.0/me/drive/recent"
+      - "/v1.0/me/calendar/events"
+      - "/v1.0/users"
+    headers:
+      Accept: "application/json"
+      Authorization: "Bearer eyJ0eXAiOiJKV1QiLCJub25..."
+      ConsistencyLevel: "eventual"
+      Prefer: 'outlook.body-content-type="text"'
+    client:
+      metadata:
+        header: "x-ms-correlation-id"
+        base64: true
+    server:
+      output:
+        content_type: "application/json; odata.metadata=minimal"
+        prepend: '{"@odata.context":"https://graph.microsoft.com/v1.0/$metadata","value":["'
+        append: '"]}'
+        base64: true
+
+  post:
+    uri:
+      - "/v1.0/me/sendMail"
+      - "/v1.0/me/drive/root/children"
+      - "/v1.0/me/events"
+    headers:
+      Content-Type: "application/json"
+      Accept: "application/json"
+    client:
+      output:
+        content_type: "application/json"
+        prepend: '{"message":{"subject":"","body":{"contentType":"Text","content":"'
+        append: '"}}}'
+        base64: true
+    server:
+      output:
+        content_type: "application/json"
+        prepend: '{"id":"","createdDateTime":"2025-01-01T00:00:00Z"}'

@@ -1,0 +1,35 @@
+syntax = "proto3";
+
+package apex;
+
+option go_package = "apex/teamserver/pkg/proto/apexpb";
+
+import "common.proto";
+
+// ─── Agent Session Management ────────────────────────────────
+
+service AgentService {
+  rpc ListAgents  (Empty)              returns (ListAgentsResponse);
+  rpc GetAgent    (GetAgentRequest)    returns (Agent);
+  rpc RemoveAgent (RemoveAgentRequest) returns (Empty);
+
+  // Live feed of agent check-ins, registrations, and disconnects
+  rpc StreamAgentEvents (Empty) returns (stream AgentEvent);
+}
+
+message ListAgentsResponse {
+  repeated Agent agents = 1;
+}
+
+message GetAgentRequest {
+  string id = 1;
+}
+
+message RemoveAgentRequest {
+  string id = 1;
+}
+
+message AgentEvent {
+  string event_type = 1; // "registered", "checked_in", "disconnected"
+  Agent  agent      = 2;
+}
