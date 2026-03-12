@@ -791,7 +791,7 @@ sudo systemctl enable --now apex-teamserver
 
 ## Roadmap / TODO
 
-> Check off items as they are completed. Items marked 🔴 are critical gaps vs Cobalt Strike, 🟡 are important enhancements, and 🟢 are advanced/premium features.
+> Check off items as they are completed. Items marked 🔴 are critical gaps, 🟡 are important enhancements, and 🟢 are advanced/premium features.
 
 ###  Windows Agent — Evasion & Stealth
 
