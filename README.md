@@ -793,7 +793,7 @@ sudo systemctl enable --now apex-teamserver
 
 > Check off items as they are completed. Items marked 🔴 are critical gaps vs Cobalt Strike, 🟡 are important enhancements, and 🟢 are advanced/premium features.
 
-### 🧠 Windows Agent — Evasion & Stealth
+###  Windows Agent — Evasion & Stealth
 
 - [ ] 🔴 **Implement Ekko / Foliage encrypted sleep** — `encrypted_sleep()` in `evasion.h` is a stub calling plain `Sleep()`. Implement ROP-based timer sleep (Ekko / Foliage) so agent memory is XOR-encrypted while waiting.
 - [ ] 🔴 **Indirect syscalls (HellsGate / HalosGate)** — Read SSNs directly from ntdll on disk and execute `syscall` inline, bypassing all user-mode hooks regardless of EDR re-hooking.
@@ -811,7 +811,7 @@ sudo systemctl enable --now apex-teamserver
 - [ ] 🟢 **Persistence modules** — Registry Run, Task Scheduler, COM hijack (Windows); LaunchAgent already exists for macOS.
 - [ ] 🟢 **Alternative transports** — DNS-over-HTTPS, ICMP, Slack webhook implant variants to evade network DPI.
 
-### 🐧 Linux / macOS Agent — Evasion & Capability
+###  Linux / macOS Agent — Evasion & Capability
 
 - [ ] 🔴 **Implement TLS/HTTPS in POSIX agent** — `http_post()` ignores `use_https` (`(void)use_https`). Add OpenSSL/mbedTLS static link for HTTPS beaconing. All Linux/macOS C2 is currently cleartext.
 - [ ] 🔴 **`upload` command** — Neither agent has file upload (write to target). Add `handle_upload()` and a server-side receive endpoint.
@@ -822,7 +822,7 @@ sudo systemctl enable --now apex-teamserver
 - [ ] 🟡 **Linux persistence commands** — cron, systemd user unit, `.bashrc`/`.profile` injection, setuid abuse.
 - [ ] 🟢 **Unix domain socket / FIFO pivot channel** — Relay C2 traffic via named FIFO between agents for internal pivoting.
 
-### 🖥️ Team Server — Protocol & Infrastructure
+###  Team Server — Protocol & Infrastructure
 
 - [ ] 🔴 **Staged payload delivery** — Add a tiny stager (PS one-liner / shellcode dropper) that downloads the full payload at runtime. Reduces initial binary size and evades static AV.
 - [ ] 🔴 **Payload obfuscation pipeline** — Pass built binary through `donut` (EXE→shellcode) or a custom packer/encoder before delivery.
@@ -837,7 +837,7 @@ sudo systemctl enable --now apex-teamserver
 - [ ] 🟢 **P2P / pivot chains** — Agent relay mode that proxies C2 for another internal agent (SOCKS or named-pipe pivot).
 - [ ] 🟢 **External C2 plugin API** — gRPC / REST hooks for third-party C2 channel plugins (Slack, Dropbox, DoH).
 
-### 🔧 Team Server — Missing Core Features vs Cobalt Strike
+###  Team Server — Missing Core Features vs Cobalt Strike
 
 - [ ] 🔴 **Credentials vault & auto-capture** — `credentials` table exists but nothing populates it. Add `hashdump`, `logonpasswords` (Mimikatz BOF), and auto-parse BOF output into the table.
 - [ ] 🔴 **Keylogger** — `SetWindowsHookEx`-based keylogger running as a BOF, streaming output back.
@@ -852,7 +852,7 @@ sudo systemctl enable --now apex-teamserver
 - [ ] 🟢 **Active Directory recon BOFs** — `ldapsearch`, domain trust enum, SPN query, BloodHound ingestor.
 - [ ] 🟢 **Kerberos attacks** — `asktgt`, Kerberoasting, AS-REP roasting using token manipulation infrastructure.
 
-### 🎨 Operator Client — UI / UX
+###  Operator Client — UI / UX
 
 - [ ] 🔴 **Build out Attack Graph page** — `GraphPage.tsx` is 569 bytes / empty. Wire real agent & pivot data into `@xyflow/react`.
 - [ ] 🔴 **Interactive file browser** — Tree-based UI calling `ls`/`pwd`/`cd` with drag-to-download and click-to-upload.
@@ -879,7 +879,7 @@ sudo systemctl enable --now apex-teamserver
 - [ ] 🟡 **Categorised BOF storage** — Tag BOFs by category (privesc, persistence, recon, lateral movement) in the database.
 - [ ] 🟢 **x86 BOF support** — Add COFF loader for `IMAGE_FILE_MACHINE_I386` targets.
 
-### ⚙️ DevOps, Build & Packaging
+###  DevOps, Build & Packaging
 
 - [ ] 🔴 **Hermetic Docker build environment** — `Dockerfile.builder` with pinned MinGW/GCC versions for reproducible, deterministic payloads.
 - [ ] 🟡 **CI/CD pipeline (GitHub Actions)** — Automated `go test ./...`, linting, and headless builder smoke-test on every push.
@@ -889,7 +889,7 @@ sudo systemctl enable --now apex-teamserver
 - [ ] 🟢 **Signed release binaries** — GPG-signed server releases with reproducible build attestation.
 - [ ] 🟢 **Multi-teamserver federation** — Share agents, credentials, and op logs across teamserver instances via gRPC for large red team engagements.
 
-### 🔒 Security Hardening
+###  Security Hardening
 
 - [ ] 🔴 **Default HTTPS on REST API** — Auto-generate a self-signed cert at startup so the API is never exposed over plaintext by default.
 - [ ] 🔴 **mTLS for operator client** — Optional mutual TLS between the Tauri client and teamserver so only clients with the right cert can connect, even with a stolen JWT.
