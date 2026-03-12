@@ -124,6 +124,7 @@ export default function TerminalPage() {
         "  cd <path>             Change directory",
         "  dir / ls [path]       List directory contents",
         "  download <path>       Download file from target",
+        "  upload <path>         Upload file to target",
         "  shell <cmd>           Execute shell command",
         "  exec <cmd>            Execute shell command (alias)",
         "",
