@@ -3,7 +3,7 @@ import { create } from "zustand";
 export interface Listener {
   id: string;
   name: string;
-  protocol: "http" | "https" | "dns" | "tcp" | "smb";
+  protocol: "http" | "https" | "mtls" | "dns" | "tcp" | "smb";
   bindAddress: string;
   bindPort: number;
   status: "active" | "inactive" | "error";

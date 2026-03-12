@@ -115,7 +115,7 @@ export default function LoginPage() {
         </form>
 
         <p className="text-center text-[11px] text-apex-muted mt-6 font-mono">
-          Apex C2 Framework v0.1.0
+          Apex C2 Framework
         </p>
       </div>
     </div>

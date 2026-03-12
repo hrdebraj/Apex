@@ -1,0 +1,42 @@
+name: "slack"
+description: "Mimics Slack API traffic - Chat, RTM, Web API calls"
+sleep:
+  interval: 55
+  jitter: 18
+http:
+  get:
+    uri: ["/api/rtm.connect", "/api/conversations.list", "/api/users.list", "/api/auth.test"]
+    headers:
+      Authorization: "Bearer xoxb-********"
+      Content-Type: "application/json; charset=utf-8"
+    client:
+      metadata:
+        header: "Cookie"
+        prepend: "session="
+        base64: true
+      output:
+        base64: true
+    server:
+      output:
+        content_type: "application/json"
+        prepend: ""
+        append: ""
+  post:
+    uri: ["/api/chat.postMessage", "/api/conversations.history", "/api/files.upload"]
+    headers:
+      Authorization: "Bearer xoxb-********"
+      Content-Type: "application/json; charset=utf-8"
+    client:
+      metadata:
+        header: "Cookie"
+        base64: true
+      output:
+        base64: true
+    server:
+      output:
+        content_type: "application/json"
+user_agents:
+  - "Slack/4.29.0 Windows/10.0.19045 (x64)"
+  - "Slackbot/1.0 (+https://api.slack.com/robots)"
+  - "Slack-Webhooks/1.0"
+  - "slack-client/1.0 (Linux; x86_64)"

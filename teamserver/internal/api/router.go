@@ -75,7 +75,9 @@ func NewRouter(a *API) http.Handler {
 			r.Get("/agents/{agentID}/tasks", taskHandler.ListByAgent)
 
 			r.Get("/profiles", profileHandler.List)
+			r.Post("/profiles", profileHandler.Upload)
 			r.Get("/profiles/{name}", profileHandler.Get)
+			r.Delete("/profiles/{name}", profileHandler.Delete)
 
 			r.Post("/payloads/generate", payloadHandler.Generate)
 			r.Get("/payloads/bofs", payloadHandler.ListBOFs)

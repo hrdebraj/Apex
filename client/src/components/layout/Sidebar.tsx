@@ -10,7 +10,6 @@ import {
   Crosshair,
   Settings,
   LogOut,
-  Shield,
   Package,
   Layers,
 } from "lucide-react";
@@ -39,16 +38,24 @@ export default function Sidebar() {
 
   return (
     <aside className="w-60 h-screen bg-apex-surface border-r border-apex-border flex flex-col">
-      {/* Logo */}
-      <div className="px-5 py-5 border-b border-apex-border">
-        <div className="flex items-center gap-2.5">
-          <Shield className="w-7 h-7 text-apex-accent" />
+      {/* Logo — glitch effect */}
+      <div className="px-5 py-5 border-b border-apex-border apex-logo-container">
+        <div className="flex items-center gap-3">
+          <div className="relative">
+            <div className="w-9 h-9 rounded-lg bg-apex-accent/10 border border-apex-accent/30 flex items-center justify-center pulse-border">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" className="text-apex-accent">
+                <path d="M12 2L2 19h20L12 2z" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" fill="none"/>
+                <path d="M12 8v5" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+                <circle cx="12" cy="16" r="1" fill="currentColor"/>
+              </svg>
+            </div>
+          </div>
           <div>
-            <h1 className="text-lg font-semibold tracking-tight text-apex-text">
+            <h1 className="text-xl font-bold tracking-widest text-apex-text glitch-text font-mono">
               APEX
             </h1>
-            <p className="text-[10px] font-mono text-apex-muted tracking-widest uppercase">
-              Command & Control
+            <p className="text-[9px] font-mono text-apex-accent/70 tracking-[0.25em] uppercase">
+              C2 Framework
             </p>
           </div>
         </div>
@@ -61,9 +68,9 @@ export default function Sidebar() {
             key={to}
             to={to}
             className={({ isActive }) =>
-              `flex items-center gap-3 px-3 py-2.5 rounded-md text-sm font-medium transition-colors ${
+              `flex items-center gap-3 px-3 py-2.5 rounded-md text-sm font-medium transition-all duration-150 ${
                 isActive
-                  ? "bg-apex-accent/10 text-apex-accent"
+                  ? "bg-apex-accent/10 text-apex-accent border-l-2 border-apex-accent"
                   : "text-apex-muted hover:text-apex-text hover:bg-apex-hover"
               }`
             }
@@ -71,7 +78,7 @@ export default function Sidebar() {
             <Icon className="w-4 h-4" />
             <span className="flex-1">{label}</span>
             {to === "/terminal" && unackedWarnings > 0 && (
-              <span className="w-5 h-5 rounded-full bg-apex-danger/20 text-apex-danger text-[10px] font-bold flex items-center justify-center">
+              <span className="w-5 h-5 rounded-full bg-apex-danger/20 text-apex-danger text-[10px] font-bold flex items-center justify-center animate-pulse">
                 {unackedWarnings}
               </span>
             )}

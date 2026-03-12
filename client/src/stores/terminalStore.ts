@@ -27,7 +27,7 @@ interface TerminalState {
 
 const defaultSession = (): TerminalSession => ({
   lines: [
-    { type: "info", text: "Apex Terminal v0.1.0 -- Type 'help' for commands.", timestamp: new Date().toISOString() },
+    { type: "info", text: "Apex Terminal -- Type 'help' for commands.", timestamp: new Date().toISOString() },
   ],
   cmdHistory: [],
 });

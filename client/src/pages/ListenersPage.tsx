@@ -63,6 +63,7 @@ function CreateListenerModal({ onClose, onCreate }: {
           >
             <option value="http" className="bg-apex-surface text-apex-text">HTTP</option>
             <option value="https" className="bg-apex-surface text-apex-text">HTTPS</option>
+            <option value="mtls" className="bg-apex-surface text-apex-text">mTLS (Mutual TLS)</option>
             <option value="dns" className="bg-apex-surface text-apex-text">DNS</option>
             <option value="tcp" className="bg-apex-surface text-apex-text">TCP</option>
             <option value="smb" className="bg-apex-surface text-apex-text">SMB</option>

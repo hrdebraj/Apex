@@ -7,6 +7,7 @@ type Protocol string
 const (
 	ProtocolHTTP  Protocol = "http"
 	ProtocolHTTPS Protocol = "https"
+	ProtocolMTLS  Protocol = "mtls"
 	ProtocolDNS   Protocol = "dns"
 	ProtocolTCP   Protocol = "tcp"
 	ProtocolSMB   Protocol = "smb"

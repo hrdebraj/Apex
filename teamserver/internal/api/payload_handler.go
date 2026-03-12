@@ -86,11 +86,13 @@ func (h *PayloadHandler) loadExistingBOFs() {
 
 // GenerateRequest mirrors the client's payload configuration.
 type GenerateRequest struct {
+	Platform           string   `json:"platform"` // "windows" | "linux" | "macos"
 	OutputFormat       string   `json:"output_format"`
 	ListenerID         string   `json:"listener_id"`
 	CallbackHost       string   `json:"callback_host"`
 	CallbackPort       int      `json:"callback_port"`
 	ProfileName        string   `json:"profile_name"`
+	// Windows evasion
 	SleepObfuscation   bool     `json:"sleep_obfuscation"`
 	SleepMethod        string   `json:"sleep_method"`
 	EncryptedShellcode bool     `json:"encrypted_shellcode"`
@@ -101,6 +103,12 @@ type GenerateRequest struct {
 	HardwareBreakpoint bool     `json:"hardware_breakpoint"`
 	BYOVD              bool     `json:"byovd"`
 	BOFIDs             []string `json:"bof_ids"`
+	// POSIX evasion (Linux/macOS)
+	AntiDebug    bool `json:"anti_debug"`
+	ProcMask     bool `json:"proc_mask"`
+	SelfDelete   bool `json:"self_delete"`
+	EnvClean     bool `json:"env_clean"`
+	SandboxCheck bool `json:"sandbox_check"`
 }
 
 type GenerateResponse struct {
@@ -144,6 +152,11 @@ func (h *PayloadHandler) Generate(w http.ResponseWriter, r *http.Request) {
 	}
 	useHTTPS := l.Protocol() == listeners.ProtocolHTTPS
 
+	platform := builder.Platform(strings.ToLower(req.Platform))
+	if platform == "" {
+		platform = builder.PlatformWindows
+	}
+
 	evasion := &builder.EvasionOpts{
 		SleepObfuscation: req.SleepObfuscation,
 		UnhookNtdll:      req.UnhookNtdll,
@@ -151,15 +164,20 @@ func (h *PayloadHandler) Generate(w http.ResponseWriter, r *http.Request) {
 		AMSIPatch:        req.AMSIPatch,
 	}
 
+	posixEvasion := &builder.PosixEvasionOpts{
+		AntiDebug:    req.AntiDebug,
+		ProcMask:     req.ProcMask,
+		SelfDelete:   req.SelfDelete,
+		EnvClean:     req.EnvClean,
+		SandboxCheck: req.SandboxCheck,
+	}
+
 	log.Info().
+		Str("platform", string(platform)).
 		Str("format", req.OutputFormat).
-		Bool("etw", req.ETWPatch).
-		Bool("amsi", req.AMSIPatch).
-		Bool("sleep_obf", req.SleepObfuscation).
-		Bool("unhook", req.UnhookNtdll).
 		Msg("Building agent payload")
 
-	b64, filename, err := builder.BuildBase64(h.agentDir, req.OutputFormat, c2Host, c2Port, useHTTPS, evasion)
+	b64, filename, err := builder.BuildBase64(h.agentDir, platform, req.OutputFormat, c2Host, c2Port, useHTTPS, evasion, posixEvasion)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "build failed: "+err.Error())
 		return

@@ -79,7 +79,7 @@ export default function SettingsPage() {
           About
         </div>
         <div className="text-xs text-apex-muted space-y-1 font-mono">
-          <p>Apex C2 Framework v0.1.0</p>
+          <p>Apex C2 Framework</p>
           <p>Team Server: Go | Client: Tauri + React | Agent: C/C++</p>
           <p>Protocol: gRPC with mTLS</p>
         </div>

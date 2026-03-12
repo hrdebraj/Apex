@@ -1,15 +1,18 @@
 import { apiClient } from "./api";
 
-export type OutputFormat = "exe" | "dll" | "shellcode" | "service_exe";
+export type Platform = "windows" | "linux" | "macos";
+export type OutputFormat = "exe" | "dll" | "shellcode" | "service_exe" | "elf" | "macho";
 export type SleepMethod = "none" | "ekko" | "foliage";
 export type EncryptionMethod = "aes256" | "chacha20";
 
 export interface GeneratePayloadRequest {
+  platform: Platform;
   output_format: OutputFormat;
   listener_id: string;
   callback_host?: string;
   callback_port?: number;
   profile_name: string;
+  // Windows evasion
   sleep_obfuscation: boolean;
   sleep_method: SleepMethod;
   encrypted_shellcode: boolean;
@@ -20,6 +23,12 @@ export interface GeneratePayloadRequest {
   hardware_breakpoint: boolean;
   byovd?: boolean;
   bof_ids?: string[];
+  // POSIX evasion (Linux/macOS)
+  anti_debug: boolean;
+  proc_mask: boolean;
+  self_delete: boolean;
+  env_clean: boolean;
+  sandbox_check: boolean;
 }
 
 export interface GeneratePayloadResponse {

@@ -6,6 +6,7 @@ import {
 import { apiClient } from "../services/api";
 import {
   payloadService,
+  type Platform,
   type OutputFormat,
   type SleepMethod,
   type EncryptionMethod,
@@ -16,39 +17,104 @@ import {
   FileCode,
   Shield,
   Zap,
+  Monitor,
+  Terminal as TerminalIcon,
+  Apple,
 } from "lucide-react";
 
 type Profile = { name: string; description: string };
 
+const platforms: { id: Platform; label: string; icon: typeof Monitor }[] = [
+  { id: "windows", label: "Windows", icon: Monitor },
+  { id: "linux", label: "Linux", icon: TerminalIcon },
+  { id: "macos", label: "macOS", icon: Apple },
+];
+
+const winOutputOptions: { value: OutputFormat; label: string; icon: typeof Cpu }[] = [
+  { value: "exe", label: "Executable (.exe)", icon: Cpu },
+  { value: "dll", label: "DLL (.dll)", icon: FileCode },
+  { value: "shellcode", label: "Shellcode (.bin)", icon: Zap },
+  { value: "service_exe", label: "Service EXE", icon: Cpu },
+];
+
+const linuxOutputOptions: { value: OutputFormat; label: string; icon: typeof Cpu }[] = [
+  { value: "elf", label: "ELF Binary", icon: Cpu },
+];
+
+const macOutputOptions: { value: OutputFormat; label: string; icon: typeof Cpu }[] = [
+  { value: "macho", label: "Mach-O Binary", icon: Cpu },
+];
+
+function Toggle({
+  label,
+  checked,
+  onChange,
+}: {
+  label: string;
+  checked: boolean;
+  onChange: (v: boolean) => void;
+}) {
+  return (
+    <label className="flex items-center justify-between cursor-pointer group">
+      <span className="text-sm text-apex-text group-hover:text-apex-accent transition-colors">
+        {label}
+      </span>
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+        className="rounded border-apex-border bg-apex-bg text-apex-accent focus:ring-apex-accent"
+      />
+    </label>
+  );
+}
+
 export default function AgentBuilderPage() {
   const [listeners, setListeners] = useState<ListenerResponse[]>([]);
   const [profiles, setProfiles] = useState<Profile[]>([]);
+
+  // Common
+  const [platform, setPlatform] = useState<Platform>("windows");
   const [outputFormat, setOutputFormat] = useState<OutputFormat>("exe");
   const [listenerId, setListenerId] = useState("");
   const [callbackHost, setCallbackHost] = useState("");
   const [callbackPort, setCallbackPort] = useState(0);
   const [profileName, setProfileName] = useState("default");
-  const [sleepObfuscation, setSleepObfuscation] = useState(true);
-  const [sleepMethod, setSleepMethod] = useState<SleepMethod>("ekko");
-  const [encryptedShellcode, setEncryptedShellcode] = useState(true);
-  const [encryptionMethod, setEncryptionMethod] =
-    useState<EncryptionMethod>("aes256");
-  const [unhookNtdll, setUnhookNtdll] = useState(true);
-  const [etwPatch, setEtwPatch] = useState(true);
-  const [amsiPatch, setAmsiPatch] = useState(true);
-  const [hardwareBreakpoint, setHardwareBreakpoint] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [message, setMessage] = useState<{
     type: "success" | "error" | "info";
     text: string;
   } | null>(null);
+
+  // Windows evasion
+  const [sleepObfuscation, setSleepObfuscation] = useState(true);
+  const [sleepMethod, setSleepMethod] = useState<SleepMethod>("ekko");
+  const [encryptedShellcode, setEncryptedShellcode] = useState(true);
+  const [encryptionMethod, setEncryptionMethod] = useState<EncryptionMethod>("aes256");
+  const [unhookNtdll, setUnhookNtdll] = useState(true);
+  const [etwPatch, setEtwPatch] = useState(true);
+  const [amsiPatch, setAmsiPatch] = useState(true);
+  const [hardwareBreakpoint, setHardwareBreakpoint] = useState(false);
+
+  // POSIX evasion (Linux/macOS)
+  const [antiDebug, setAntiDebug] = useState(true);
+  const [procMask, setProcMask] = useState(true);
+  const [selfDelete, setSelfDelete] = useState(false);
+  const [envClean, setEnvClean] = useState(true);
+  const [sandboxCheck, setSandboxCheck] = useState(true);
+
+  const handlePlatformChange = (p: Platform) => {
+    setPlatform(p);
+    if (p === "windows") setOutputFormat("exe");
+    else if (p === "linux") setOutputFormat("elf");
+    else setOutputFormat("macho");
+  };
+
   const fetchListeners = useCallback(async () => {
     try {
       const data = await listenerService.list();
       setListeners(data);
-      if (data.length > 0 && !listenerId) {
-        setListenerId(data[0].id);
-      }
+      if (data.length > 0 && !listenerId) setListenerId(data[0].id);
     } catch {
       setListeners([]);
     }
@@ -58,9 +124,7 @@ export default function AgentBuilderPage() {
     try {
       const data = await apiClient.get<Profile[]>("/api/profiles");
       setProfiles(data);
-      if (data.length > 0 && !profileName) {
-        setProfileName(data[0].name);
-      }
+      if (data.length > 0 && !profileName) setProfileName(data[0].name);
     } catch {
       setProfiles([{ name: "default", description: "Default profile" }]);
     }
@@ -80,6 +144,7 @@ export default function AgentBuilderPage() {
     setMessage(null);
     try {
       const res = await payloadService.generate({
+        platform,
         output_format: outputFormat,
         listener_id: listenerId,
         callback_host: callbackHost || undefined,
@@ -93,13 +158,20 @@ export default function AgentBuilderPage() {
         etw_patch: etwPatch,
         amsi_patch: amsiPatch,
         hardware_breakpoint: hardwareBreakpoint,
+        anti_debug: antiDebug,
+        proc_mask: procMask,
+        self_delete: selfDelete,
+        env_clean: envClean,
+        sandbox_check: sandboxCheck,
       });
       setMessage({
         type: res.success ? "success" : "info",
         text: res.message,
       });
       if (res.success && res.payload_base64 && res.filename) {
-        const bin = Uint8Array.from(atob(res.payload_base64), (c) => c.charCodeAt(0));
+        const bin = Uint8Array.from(atob(res.payload_base64), (c) =>
+          c.charCodeAt(0)
+        );
         const blob = new Blob([bin], { type: "application/octet-stream" });
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
@@ -118,22 +190,39 @@ export default function AgentBuilderPage() {
     }
   };
 
-  const outputOptions: { value: OutputFormat; label: string; icon: typeof Cpu }[] = [
-    { value: "exe", label: "Executable (.exe)", icon: Cpu },
-    { value: "dll", label: "DLL (.dll)", icon: FileCode },
-    { value: "shellcode", label: "Shellcode (.bin)", icon: Zap },
-    { value: "service_exe", label: "Service EXE", icon: Cpu },
-  ];
+  const currentOutputOptions =
+    platform === "windows"
+      ? winOutputOptions
+      : platform === "linux"
+      ? linuxOutputOptions
+      : macOutputOptions;
 
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="text-lg font-semibold text-apex-text">
-          Agent Builder
-        </h2>
+        <h2 className="text-lg font-semibold text-apex-text">Agent Builder</h2>
         <p className="text-sm text-apex-muted mt-0.5">
-          Generate EXE, DLL, or shellcode payloads. Configure callback and evasion options.
+          Generate payloads for Windows, Linux, or macOS. Configure callback and
+          evasion options per platform.
         </p>
+      </div>
+
+      {/* Platform Tabs */}
+      <div className="flex gap-1 bg-apex-bg rounded-lg p-1 border border-apex-border">
+        {platforms.map(({ id, label, icon: Icon }) => (
+          <button
+            key={id}
+            onClick={() => handlePlatformChange(id)}
+            className={`flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-md text-sm font-medium transition-all ${
+              platform === id
+                ? "bg-apex-accent/20 text-apex-accent border border-apex-accent/40 shadow-sm"
+                : "text-apex-muted hover:text-apex-text hover:bg-apex-surface"
+            }`}
+          >
+            <Icon className="w-4 h-4" />
+            {label}
+          </button>
+        ))}
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -149,7 +238,7 @@ export default function AgentBuilderPage() {
               Output Format
             </label>
             <div className="grid grid-cols-2 gap-2">
-              {outputOptions.map(({ value, label, icon: Icon }) => (
+              {currentOutputOptions.map(({ value, label, icon: Icon }) => (
                 <button
                   key={value}
                   onClick={() => setOutputFormat(value)}
@@ -209,7 +298,9 @@ export default function AgentBuilderPage() {
               <input
                 type="number"
                 value={callbackPort || ""}
-                onChange={(e) => setCallbackPort(parseInt(e.target.value, 10) || 0)}
+                onChange={(e) =>
+                  setCallbackPort(parseInt(e.target.value, 10) || 0)
+                }
                 placeholder="Override"
                 className="apex-input text-sm"
               />
@@ -239,108 +330,184 @@ export default function AgentBuilderPage() {
           </div>
         </div>
 
-        {/* OPSEC Options */}
+        {/* OPSEC Options — platform-specific */}
         <div className="apex-card p-5 space-y-4">
           <h3 className="text-sm font-medium text-apex-text uppercase tracking-wider flex items-center gap-2">
             <Shield className="w-4 h-4 text-apex-accent" />
-            OPSEC Options
+            {platform === "windows"
+              ? "Windows OPSEC"
+              : platform === "linux"
+              ? "Linux OPSEC"
+              : "macOS OPSEC"}
           </h3>
 
-          <div className="space-y-3">
-            <label className="flex items-center justify-between cursor-pointer group">
-              <span className="text-sm text-apex-text group-hover:text-apex-accent transition-colors">
-                Sleep Obfuscation (Ekko/Foliage)
-              </span>
-              <input
-                type="checkbox"
+          {platform === "windows" && (
+            <div className="space-y-3">
+              <Toggle
+                label="Sleep Obfuscation (Ekko/Foliage)"
                 checked={sleepObfuscation}
-                onChange={(e) => setSleepObfuscation(e.target.checked)}
-                className="rounded border-apex-border bg-apex-bg text-apex-accent focus:ring-apex-accent"
+                onChange={setSleepObfuscation}
               />
-            </label>
-            {sleepObfuscation && (
-              <select
-                value={sleepMethod}
-                onChange={(e) => setSleepMethod(e.target.value as SleepMethod)}
-                className="apex-select text-sm"
-                style={{ colorScheme: "dark" }}
-              >
-                <option value="ekko" className="bg-apex-surface text-apex-text">Ekko</option>
-                <option value="foliage" className="bg-apex-surface text-apex-text">Foliage</option>
-              </select>
-            )}
+              {sleepObfuscation && (
+                <select
+                  value={sleepMethod}
+                  onChange={(e) =>
+                    setSleepMethod(e.target.value as SleepMethod)
+                  }
+                  className="apex-select text-sm"
+                  style={{ colorScheme: "dark" }}
+                >
+                  <option
+                    value="ekko"
+                    className="bg-apex-surface text-apex-text"
+                  >
+                    Ekko
+                  </option>
+                  <option
+                    value="foliage"
+                    className="bg-apex-surface text-apex-text"
+                  >
+                    Foliage
+                  </option>
+                </select>
+              )}
 
-            <label className="flex items-center justify-between cursor-pointer group">
-              <span className="text-sm text-apex-text group-hover:text-apex-accent transition-colors">
-                Encrypted Shellcode (AES-256/ChaCha20)
-              </span>
-              <input
-                type="checkbox"
+              <Toggle
+                label="Encrypted Shellcode (AES-256/ChaCha20)"
                 checked={encryptedShellcode}
-                onChange={(e) => setEncryptedShellcode(e.target.checked)}
-                className="rounded border-apex-border bg-apex-bg text-apex-accent focus:ring-apex-accent"
+                onChange={setEncryptedShellcode}
               />
-            </label>
-            {encryptedShellcode && (
-              <select
-                value={encryptionMethod}
-                onChange={(e) => setEncryptionMethod(e.target.value as EncryptionMethod)}
-                className="apex-select text-sm"
-                style={{ colorScheme: "dark" }}
-              >
-                <option value="aes256" className="bg-apex-surface text-apex-text">AES-256</option>
-                <option value="chacha20" className="bg-apex-surface text-apex-text">ChaCha20</option>
-              </select>
-            )}
+              {encryptedShellcode && (
+                <select
+                  value={encryptionMethod}
+                  onChange={(e) =>
+                    setEncryptionMethod(e.target.value as EncryptionMethod)
+                  }
+                  className="apex-select text-sm"
+                  style={{ colorScheme: "dark" }}
+                >
+                  <option
+                    value="aes256"
+                    className="bg-apex-surface text-apex-text"
+                  >
+                    AES-256
+                  </option>
+                  <option
+                    value="chacha20"
+                    className="bg-apex-surface text-apex-text"
+                  >
+                    ChaCha20
+                  </option>
+                </select>
+              )}
 
-            <label className="flex items-center justify-between cursor-pointer group">
-              <span className="text-sm text-apex-text group-hover:text-apex-accent transition-colors">
-                Unhook ntdll (EDR evasion)
-              </span>
-              <input
-                type="checkbox"
+              <Toggle
+                label="Unhook ntdll (EDR evasion)"
                 checked={unhookNtdll}
-                onChange={(e) => setUnhookNtdll(e.target.checked)}
-                className="rounded border-apex-border bg-apex-bg text-apex-accent focus:ring-apex-accent"
+                onChange={setUnhookNtdll}
               />
-            </label>
-
-            <label className="flex items-center justify-between cursor-pointer group">
-              <span className="text-sm text-apex-text group-hover:text-apex-accent transition-colors">
-                ETW Patching
-              </span>
-              <input
-                type="checkbox"
+              <Toggle
+                label="ETW Patching"
                 checked={etwPatch}
-                onChange={(e) => setEtwPatch(e.target.checked)}
-                className="rounded border-apex-border bg-apex-bg text-apex-accent focus:ring-apex-accent"
+                onChange={setEtwPatch}
               />
-            </label>
-
-            <label className="flex items-center justify-between cursor-pointer group">
-              <span className="text-sm text-apex-text group-hover:text-apex-accent transition-colors">
-                AMSI Patching
-              </span>
-              <input
-                type="checkbox"
+              <Toggle
+                label="AMSI Patching"
                 checked={amsiPatch}
-                onChange={(e) => setAmsiPatch(e.target.checked)}
-                className="rounded border-apex-border bg-apex-bg text-apex-accent focus:ring-apex-accent"
+                onChange={setAmsiPatch}
               />
-            </label>
-
-            <label className="flex items-center justify-between cursor-pointer group">
-              <span className="text-sm text-apex-text group-hover:text-apex-accent transition-colors">
-                Hardware Breakpoint (DR0-DR3)
-              </span>
-              <input
-                type="checkbox"
+              <Toggle
+                label="Hardware Breakpoint (DR0-DR3)"
                 checked={hardwareBreakpoint}
-                onChange={(e) => setHardwareBreakpoint(e.target.checked)}
-                className="rounded border-apex-border bg-apex-bg text-apex-accent focus:ring-apex-accent"
+                onChange={setHardwareBreakpoint}
               />
-            </label>
-          </div>
+            </div>
+          )}
+
+          {platform === "linux" && (
+            <div className="space-y-3">
+              <Toggle
+                label="Anti-Debug (ptrace TRACEME + TracerPid)"
+                checked={antiDebug}
+                onChange={setAntiDebug}
+              />
+              <Toggle
+                label="Process Name Masking (prctl + argv)"
+                checked={procMask}
+                onChange={setProcMask}
+              />
+              <Toggle
+                label="Self-Delete Binary After Launch"
+                checked={selfDelete}
+                onChange={setSelfDelete}
+              />
+              <Toggle
+                label="LD_PRELOAD / LD_AUDIT Cleanup"
+                checked={envClean}
+                onChange={setEnvClean}
+              />
+              <Toggle
+                label="Sandbox / VM Detection"
+                checked={sandboxCheck}
+                onChange={setSandboxCheck}
+              />
+
+              <div className="mt-3 p-3 rounded-md bg-apex-bg border border-apex-border">
+                <p className="text-xs text-apex-muted leading-relaxed">
+                  <span className="text-apex-accent font-medium">Linux agent</span>{" "}
+                  uses raw TCP sockets for HTTP beaconing. Runs as a daemon by
+                  default. Supports all standard commands: shell, whoami, ps, cd,
+                  pwd, download, sleep, exit. Agent masks itself as{" "}
+                  <code className="text-apex-accent">[kworker/u:0]</code> in
+                  process listings.
+                </p>
+              </div>
+            </div>
+          )}
+
+          {platform === "macos" && (
+            <div className="space-y-3">
+              <Toggle
+                label="Anti-Debug (PT_DENY_ATTACH + sysctl)"
+                checked={antiDebug}
+                onChange={setAntiDebug}
+              />
+              <Toggle
+                label="Process Name Masking (argv overwrite)"
+                checked={procMask}
+                onChange={setProcMask}
+              />
+              <Toggle
+                label="Self-Delete Binary After Launch"
+                checked={selfDelete}
+                onChange={setSelfDelete}
+              />
+              <Toggle
+                label="DYLD Environment Cleanup"
+                checked={envClean}
+                onChange={setEnvClean}
+              />
+              <Toggle
+                label="Sandbox / VM Detection"
+                checked={sandboxCheck}
+                onChange={setSandboxCheck}
+              />
+
+              <div className="mt-3 p-3 rounded-md bg-apex-bg border border-apex-border">
+                <p className="text-xs text-apex-muted leading-relaxed">
+                  <span className="text-apex-accent font-medium">macOS agent</span>{" "}
+                  uses raw TCP sockets for HTTP beaconing. Daemonizes by default.
+                  Supports all standard commands. Uses PT_DENY_ATTACH to block
+                  debuggers and cleans DYLD_INSERT_LIBRARIES to prevent monitoring
+                  shim injection.
+                  {" "}
+                  <span className="text-apex-warning">
+                    Cross-compilation requires osxcross toolchain.
+                  </span>
+                </p>
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
@@ -352,13 +519,17 @@ export default function AgentBuilderPage() {
           className="apex-btn apex-btn-primary flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {generating ? (
-            <>
-              <span className="animate-pulse">Generating…</span>
-            </>
+            <span className="animate-pulse">Generating…</span>
           ) : (
             <>
               <Download className="w-4 h-4" />
-              Generate Payload
+              Generate{" "}
+              {platform === "windows"
+                ? "Windows"
+                : platform === "linux"
+                ? "Linux"
+                : "macOS"}{" "}
+              Payload
             </>
           )}
         </button>

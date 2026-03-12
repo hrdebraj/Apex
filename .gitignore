@@ -4,6 +4,8 @@ bin/
 *.dll
 *.so
 *.dylib
+agent/agent_linux
+agent/agent_macos
 
 # Release binaries in release/ are committed
 

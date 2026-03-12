@@ -79,3 +79,128 @@
     @apply apex-badge bg-apex-danger/15 text-apex-danger;
   }
 }
+
+/* ── Glitch Effect ────────────────────────────────────────── */
+
+@keyframes glitch-skew {
+  0%  { transform: skew(0deg); }
+  20% { transform: skew(-2deg); }
+  40% { transform: skew(0.5deg); }
+  60% { transform: skew(-0.3deg); }
+  80% { transform: skew(0.8deg); }
+  100%{ transform: skew(0deg); }
+}
+
+@keyframes glitch-text {
+  0%   { text-shadow: 2px 0 #00d4aa, -2px 0 #ff0040; }
+  14%  { text-shadow: -2px 0 #00d4aa, 2px 0 #ff0040; }
+  15%  { text-shadow: none; }
+  49%  { text-shadow: none; }
+  50%  { text-shadow: 1px 0 #00d4aa, -1px 0 #ff0040; }
+  51%  { text-shadow: none; }
+  79%  { text-shadow: none; }
+  80%  { text-shadow: -1px 0 #00d4aa, 1px 0 #ff0040; }
+  81%  { text-shadow: none; }
+  100% { text-shadow: none; }
+}
+
+@keyframes glitch-line {
+  0%   { opacity: 0; height: 0; }
+  10%  { opacity: 1; height: 1px; }
+  20%  { opacity: 0; height: 0; }
+  100% { opacity: 0; height: 0; }
+}
+
+@keyframes pulse-glow {
+  0%, 100% { box-shadow: 0 0 5px rgba(0, 212, 170, 0.2); }
+  50%      { box-shadow: 0 0 20px rgba(0, 212, 170, 0.4), 0 0 40px rgba(0, 212, 170, 0.1); }
+}
+
+@keyframes scan-line {
+  0%   { top: -5%; }
+  100% { top: 105%; }
+}
+
+@keyframes flicker {
+  0%, 100% { opacity: 1; }
+  92%      { opacity: 1; }
+  93%      { opacity: 0.7; }
+  94%      { opacity: 1; }
+  96%      { opacity: 0.9; }
+  97%      { opacity: 1; }
+}
+
+@keyframes data-stream {
+  0%   { background-position: 0 0; }
+  100% { background-position: 0 -200px; }
+}
+
+.glitch-text {
+  animation: glitch-text 4s infinite, flicker 8s infinite;
+  position: relative;
+}
+
+.glitch-text:hover {
+  animation: glitch-text 0.3s infinite, glitch-skew 0.5s infinite;
+}
+
+.apex-logo-container {
+  position: relative;
+  overflow: hidden;
+}
+
+.apex-logo-container::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  width: 100%;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(0, 212, 170, 0.4), transparent);
+  animation: scan-line 6s linear infinite;
+  pointer-events: none;
+}
+
+.pulse-border {
+  animation: pulse-glow 3s ease-in-out infinite;
+}
+
+.card-hover {
+  transition: all 0.2s ease;
+}
+
+.card-hover:hover {
+  border-color: rgba(0, 212, 170, 0.3);
+  box-shadow: 0 0 15px rgba(0, 212, 170, 0.05);
+  transform: translateY(-1px);
+}
+
+/* CRT scanline overlay — subtle */
+.crt-overlay {
+  position: relative;
+}
+
+.crt-overlay::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0, 0, 0, 0.03) 2px,
+    rgba(0, 0, 0, 0.03) 4px
+  );
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* Typing cursor blink */
+@keyframes cursor-blink {
+  0%, 50% { border-color: #00d4aa; }
+  51%, 100% { border-color: transparent; }
+}
+
+.typing-cursor {
+  border-right: 2px solid #00d4aa;
+  animation: cursor-blink 1s step-end infinite;
+}

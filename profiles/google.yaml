@@ -1,0 +1,43 @@
+name: "google"
+description: "Mimics Google services traffic - Search, Analytics, GCP API calls"
+sleep:
+  interval: 60
+  jitter: 20
+http:
+  get:
+    uri: ["/complete/search", "/gen204", "/api/v1/analytics/data", "/gws/health"]
+    headers:
+      X-Client-Data: "CI22yQE="
+      X-Goog-Api-Client: "gl-js/ firebase/9.0.0"
+      X-Requested-With: "XMLHttpRequest"
+    client:
+      metadata:
+        header: "Cookie"
+        prepend: "session="
+        base64: true
+      output:
+        base64: true
+    server:
+      output:
+        content_type: "application/json"
+        prepend: ""
+        append: ""
+  post:
+    uri: ["/api/v1/analytics/collect", "/batch/analytics/v1"]
+    headers:
+      X-Client-Data: "CI22yQE="
+      Content-Type: "application/json"
+    client:
+      metadata:
+        header: "Cookie"
+        base64: true
+      output:
+        base64: true
+    server:
+      output:
+        content_type: "application/json"
+user_agents:
+  - "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+  - "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+  - "Google-API-Java-Client Google-HTTP-Java-Client/1.42.0 (gzip)"
+  - "google-cloud-sdk/420.0.0 (Linux; x86_64)"

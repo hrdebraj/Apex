@@ -1,52 +1,42 @@
 name: "default"
-description: "Default Apex profile - mimics standard web API traffic"
-
+description: "Basic default profile with generic web browsing traffic patterns"
 sleep:
   interval: 60
-  jitter: 15
-
-user_agents:
-  - "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
-  - "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0"
-  - "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15"
-
+  jitter: 20
 http:
   get:
-    uri:
-      - "/api/v2/analytics"
-      - "/api/v2/telemetry"
-      - "/cdn/assets/config.json"
-      - "/health"
+    uri: ["/", "/favicon.ico", "/robots.txt", "/sitemap.xml", "/api/health"]
     headers:
-      Accept: "application/json"
+      Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
       Accept-Language: "en-US,en;q=0.9"
-      Cache-Control: "no-cache"
     client:
       metadata:
-        header: "X-Request-Token"
+        header: "Cookie"
+        prepend: "session="
+        base64: true
+      output:
         base64: true
     server:
       output:
-        content_type: "application/json"
-        prepend: '{"status":"ok","data":"'
-        append: '"}'
-        base64: true
-
+        content_type: "text/html"
+        prepend: ""
+        append: ""
   post:
-    uri:
-      - "/api/v2/events"
-      - "/api/v2/metrics"
-      - "/cdn/upload"
+    uri: ["/api/submit", "/search"]
     headers:
-      Content-Type: "application/json"
       Accept: "application/json"
+      Content-Type: "application/x-www-form-urlencoded"
     client:
+      metadata:
+        header: "Cookie"
+        base64: true
       output:
-        content_type: "application/json"
-        prepend: '{"payload":"'
-        append: '"}'
         base64: true
     server:
       output:
         content_type: "application/json"
-        prepend: '{"status":"received"}'
+user_agents:
+  - "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+  - "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+  - "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+  - "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0"
