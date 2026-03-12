@@ -12,7 +12,7 @@ A modern, modular Command & Control framework built for red team operations and 
     ║    ██║  ██║██║     ███████╗██╔╝ ██╗       ║
     ║    ╚═╝  ╚═╝╚═╝     ╚══════╝╚═╝  ╚═╝       ║
     ║                                           ║
-    ║       C O M M A N D  &  C O N T R O L    ║
+    ║       C O M M A N D  &  C O N T R O L     ║
     ╚═══════════════════════════════════════════╝
 ```
 
