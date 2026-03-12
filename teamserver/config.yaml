@@ -22,7 +22,7 @@ database:
     db: 0
 
 auth:
-  jwt_secret: ""
+  jwt_secret: "change-me-in-production-use-a-real-secret"
   token_expiry: "24h"
 
 logging:
