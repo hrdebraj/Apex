@@ -183,7 +183,11 @@ sudo apt update
 sudo apt install -y build-essential git curl unzip
 
 # Go (1.22+)
-curl -sSf https://go.dev/install.sh | sh
+wget https://go.dev/dl/go1.26.1.linux-amd64.tar.gz
+rm -rf /usr/local/go && tar -C /usr/local -xzf go1.26.1.linux-amd64.tar.gz
+export PATH=$PATH:/usr/local/go/bin
+source ~/.bashrc
+
 
 # Node.js (20+)
 curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
@@ -782,6 +786,117 @@ sudo systemctl enable --now apex-teamserver
 1. Verify containers: `docker ps`
 2. Test PostgreSQL: `psql -h localhost -U apex -d apex`
 3. Test Redis: `redis-cli ping`
+
+---
+
+## Roadmap / TODO
+
+> Check off items as they are completed. Items marked 🔴 are critical gaps vs Cobalt Strike, 🟡 are important enhancements, and 🟢 are advanced/premium features.
+
+### 🧠 Windows Agent — Evasion & Stealth
+
+- [ ] 🔴 **Implement Ekko / Foliage encrypted sleep** — `encrypted_sleep()` in `evasion.h` is a stub calling plain `Sleep()`. Implement ROP-based timer sleep (Ekko / Foliage) so agent memory is XOR-encrypted while waiting.
+- [ ] 🔴 **Indirect syscalls (HellsGate / HalosGate)** — Read SSNs directly from ntdll on disk and execute `syscall` inline, bypassing all user-mode hooks regardless of EDR re-hooking.
+- [ ] 🔴 **Heap encryption during sleep** — XOR-encrypt malloc'd heap regions containing `g_agent_id`, C2 host, etc. during sleep so memory dumps reveal nothing.
+- [ ] 🔴 **PE header stomping** — Overwrite `MZ`/`PE` magic and key header fields in-memory after load to defeat `pe-sieve` and memory scanners.
+- [ ] 🔴 **PPID spoofing** — Set parent PID to `explorer.exe` / `svchost.exe` when spawning subprocesses to defeat parent-child chain anomaly detection.
+- [ ] 🔴 **Replace `CreateProcessA` with `NtCreateUserProcess` syscall** — Avoid `CreateProcess` ETW events in `exec_cmd()`.
+- [ ] 🟡 **Stack spoofing** — Spoof call stacks during sleep/wait states to defeat tools like `Hunt-Sleeping-Beacons`.
+- [ ] 🟡 **Module stomping for execution** — Write shellcode into the `.text` section of a legitimate loaded DLL instead of new `VirtualAlloc(RWX)` memory to avoid private RWX IOC.
+- [ ] 🟡 **Thread creation via `NtCreateThreadEx`** — Replace `CreateThread` with lower-level NT API to reduce event generation.
+- [ ] 🟡 **Wire malleable profile headers to agent at build time** — Agent hardcodes `Mozilla/5.0`; inject profile URI, headers, and User-Agent as compile-time `-D` flags.
+- [ ] 🟡 **Compile-time string/config encryption** — XOR or AES128-encrypt C2 host, port, and path literals; decrypt at runtime only.
+- [ ] 🟡 **PE `TimeDateStamp` backdating** — Builder should set a plausible historical date after compile to defeat timestamp-based IOC rules.
+- [ ] 🟢 **Heaven's Gate (32→64 bit transition)** — Execute syscalls via WOW64 Heaven's Gate for 32-bit evasion.
+- [ ] 🟢 **Persistence modules** — Registry Run, Task Scheduler, COM hijack (Windows); LaunchAgent already exists for macOS.
+- [ ] 🟢 **Alternative transports** — DNS-over-HTTPS, ICMP, Slack webhook implant variants to evade network DPI.
+
+### 🐧 Linux / macOS Agent — Evasion & Capability
+
+- [ ] 🔴 **Implement TLS/HTTPS in POSIX agent** — `http_post()` ignores `use_https` (`(void)use_https`). Add OpenSSL/mbedTLS static link for HTTPS beaconing. All Linux/macOS C2 is currently cleartext.
+- [ ] 🔴 **`upload` command** — Neither agent has file upload (write to target). Add `handle_upload()` and a server-side receive endpoint.
+- [ ] 🔴 **Multi-task per beacon** — Agent handles exactly one task per HTTP round-trip. Return and process a batch of queued tasks per beacon cycle.
+- [ ] 🟡 **Built-in `ls`/`dir` command** — Avoid spawning a child `ls` process; implement using `readdir()` directly.
+- [ ] 🟡 **Chunked file download** — Downloads hard-cap at 64 KB (`BUF_SIZE`). Implement multi-chunk requests for large files.
+- [ ] 🟡 **Process injection on Linux** — Add `inject` using `ptrace()` + `mmap` or `memfd_create()` + `/proc/PID/mem`.
+- [ ] 🟡 **Linux persistence commands** — cron, systemd user unit, `.bashrc`/`.profile` injection, setuid abuse.
+- [ ] 🟢 **Unix domain socket / FIFO pivot channel** — Relay C2 traffic via named FIFO between agents for internal pivoting.
+
+### 🖥️ Team Server — Protocol & Infrastructure
+
+- [ ] 🔴 **Staged payload delivery** — Add a tiny stager (PS one-liner / shellcode dropper) that downloads the full payload at runtime. Reduces initial binary size and evades static AV.
+- [ ] 🔴 **Payload obfuscation pipeline** — Pass built binary through `donut` (EXE→shellcode) or a custom packer/encoder before delivery.
+- [ ] 🔴 **End-to-end encrypted C2 channel** — `crypto.h` has AES-256 but it is **never used for C2 comms**. Implement Curve25519 ECDH key exchange at first check-in, then AES-256-GCM for all traffic.
+- [ ] 🟡 **Per-agent task batch queue** — Server returns multiple pending tasks per beacon; agent processes all and returns all results in one HTTP response.
+- [ ] 🟡 **Kill date & working-hours constraint** — Configurable kill date and beacon window (e.g., Mon–Fri 09:00–18:00) to reduce after-hours detection.
+- [ ] 🟡 **Domain fronting support** — Add `Host` header override on HTTP/HTTPS listeners for domain fronting.
+- [ ] 🟡 **Redirector config generator** — Output Apache/Nginx redirector config so non-agent traffic is proxied to a legitimate site.
+- [ ] 🟡 **SMB named-pipe listener** — Fully implement the planned Windows named-pipe listener (`\\.\pipe\<name>`) for internal pivoting.
+- [ ] 🟡 **Agent auto-update** — Track agent version; push replacement payload to upgrade in-place.
+- [ ] 🟡 **Multi-operator task locking** — Prevent two operators from sending conflicting tasks to the same agent simultaneously.
+- [ ] 🟢 **P2P / pivot chains** — Agent relay mode that proxies C2 for another internal agent (SOCKS or named-pipe pivot).
+- [ ] 🟢 **External C2 plugin API** — gRPC / REST hooks for third-party C2 channel plugins (Slack, Dropbox, DoH).
+
+### 🔧 Team Server — Missing Core Features vs Cobalt Strike
+
+- [ ] 🔴 **Credentials vault & auto-capture** — `credentials` table exists but nothing populates it. Add `hashdump`, `logonpasswords` (Mimikatz BOF), and auto-parse BOF output into the table.
+- [ ] 🔴 **Keylogger** — `SetWindowsHookEx`-based keylogger running as a BOF, streaming output back.
+- [ ] 🔴 **Screenshot** — `screenshot` command via Windows GDI `BitBlt` / Linux X11 `XGetImage`.
+- [ ] 🔴 **Port scanner** — Built-in `portscan <CIDR> <ports>` TCP connect scan on the agent (no external tools needed).
+- [ ] 🔴 **Lateral movement modules** — `wmiexec`, `psexec`, `smbexec`, `dcom` (BOF-based).
+- [ ] 🟡 **Clipboard capture** — `GetClipboardData` (Windows) / `xclip`/`pbpaste` (POSIX).
+- [ ] 🟡 **Webcam capture** — Windows DirectShow API / `gstreamer` on Linux.
+- [ ] 🟡 **Token state display in terminal** — Current impersonated token should be shown in the terminal header bar.
+- [ ] 🟡 **Full operations log UI** — `operations_log` table is only partially used. Log every task/result/operator action; surface in client.
+- [ ] 🟡 **Credential-based auto-spray** — Use stored credentials against SMB, WinRM, SSH via BOFs.
+- [ ] 🟢 **Active Directory recon BOFs** — `ldapsearch`, domain trust enum, SPN query, BloodHound ingestor.
+- [ ] 🟢 **Kerberos attacks** — `asktgt`, Kerberoasting, AS-REP roasting using token manipulation infrastructure.
+
+### 🎨 Operator Client — UI / UX
+
+- [ ] 🔴 **Build out Attack Graph page** — `GraphPage.tsx` is 569 bytes / empty. Wire real agent & pivot data into `@xyflow/react`.
+- [ ] 🔴 **Interactive file browser** — Tree-based UI calling `ls`/`pwd`/`cd` with drag-to-download and click-to-upload.
+- [ ] 🔴 **Process tree visualisation** — Parse `ps` output into a hierarchical tree with icons, privilege indicators, and right-click actions (inject, kill, migrate).
+- [ ] 🟡 **Terminal auto-complete & syntax highlighting** — Upgrade to CodeMirror / Monaco with command auto-complete and colourised output.
+- [ ] 🟡 **Agent comparison view** — Side-by-side sysinfo diff when multiple agents are selected.
+- [ ] 🟡 **Live beacon countdown timer** — Show countdown to next expected check-in in the Agents table.
+- [ ] 🟡 **Shared operator notes (markdown scratchpad)** — Collaborative SSE-backed notes per operation, similar to CS Event Log.
+- [ ] 🟡 **Light / stealth theme** — Toggle between glitch-dark and a clean professional-light theme.
+- [ ] 🟡 **Configurable OPSEC rules** — Move the 18 hardcoded OPSEC rules to PostgreSQL; make them editable per engagement.
+- [ ] 🟡 **Credential manager page** — Dedicated UI to view, tag, edit, and export the credentials table.
+- [ ] 🟡 **Listener health heartbeat** — Real-time port-open check beyond just `running/stopped` status.
+- [ ] 🟡 **Agent tagging & grouping** — Tag agents (e.g., `dc`, `workstation`) and filter by tag for large engagements.
+- [ ] 🟡 **Exfil download manager** — Progress bars for chunked exfil, download history, per-file hash display.
+- [ ] 🟢 **Integrated report generator** — One-click PDF / JSON export of full operation timeline with MITRE mappings and credentials.
+- [ ] 🟢 **Command macros / playbooks** — Save command sequences as named playbooks and execute against any agent.
+
+### 🔌 BOF Loader & Module System
+
+- [ ] 🔴 **Fix IAT `VirtualAlloc` leak in `bof.h`** — `resolve_bof_import()` allocates memory for every `__imp_` symbol and never frees it. Track and free all IAT allocations.
+- [ ] 🔴 **Implement `BeaconInjectProcess` / `BeaconInjectTemporaryProcess`** — Both are currently complete no-ops. Implement `VirtualAllocEx` + `WriteProcessMemory` + `CreateRemoteThread` injection.
+- [ ] 🟡 **BOF argument packer in client UI** — Build a typed Pack API so operators specify string/int/bytes args and the client serialises them in the correct binary format (like CS's `bof_pack`).
+- [ ] 🟡 **Expand built-in BOF library** — Add: `Seatbelt`, `Rubeus`, `SharpView`, `nanodump`, `unhook-bof`.
+- [ ] 🟡 **Categorised BOF storage** — Tag BOFs by category (privesc, persistence, recon, lateral movement) in the database.
+- [ ] 🟢 **x86 BOF support** — Add COFF loader for `IMAGE_FILE_MACHINE_I386` targets.
+
+### ⚙️ DevOps, Build & Packaging
+
+- [ ] 🔴 **Hermetic Docker build environment** — `Dockerfile.builder` with pinned MinGW/GCC versions for reproducible, deterministic payloads.
+- [ ] 🟡 **CI/CD pipeline (GitHub Actions)** — Automated `go test ./...`, linting, and headless builder smoke-test on every push.
+- [ ] 🟡 **Agent C unit tests** — Test harness for BOF loader, base64, JSON parser, and crypto functions.
+- [ ] 🟡 **Build cache** — Cache compiled payloads keyed on `(platform, c2_host, c2_port, evasion_flags_hash)` in Redis/filesystem. Eliminate repeated 10–30 s builds.
+- [ ] 🟡 **One-command installer script** — `setup.sh` installing all deps, building the server binary, and generating a self-signed TLS cert.
+- [ ] 🟢 **Signed release binaries** — GPG-signed server releases with reproducible build attestation.
+- [ ] 🟢 **Multi-teamserver federation** — Share agents, credentials, and op logs across teamserver instances via gRPC for large red team engagements.
+
+### 🔒 Security Hardening
+
+- [ ] 🔴 **Default HTTPS on REST API** — Auto-generate a self-signed cert at startup so the API is never exposed over plaintext by default.
+- [ ] 🔴 **mTLS for operator client** — Optional mutual TLS between the Tauri client and teamserver so only clients with the right cert can connect, even with a stolen JWT.
+- [ ] 🟡 **Rate limiting on check-in endpoint** — Redis-backed rate limiter per source IP to prevent fake agent registration floods.
+- [ ] 🟡 **Agent IP allowlist** — Restrict which source IPs can register new agents.
+- [ ] 🟡 **Enforce default credential change** — Refuse to start if `jwt_secret` is still `change-me-in-production`; force admin password change on first login.
+- [ ] 🟡 **One-time payload download token** — Require a unique token per agent build download to prevent unauthorised payload retrieval.
 
 ---
 
