@@ -1,9 +1,11 @@
-# Binaries
+# Binaries (local build artifacts)
 bin/
 *.exe
 *.dll
 *.so
 *.dylib
+
+# Release binaries in release/ are committed
 
 # Go
 teamserver/vendor/

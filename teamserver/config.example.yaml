@@ -1,0 +1,33 @@
+# Copy to config.yaml and customize
+# cp config.example.yaml config.yaml
+
+server:
+  grpc_addr: "0.0.0.0:50051"
+  http_addr: "0.0.0.0:8443"
+  tls:
+    enabled: false
+    cert_file: ""
+    key_file: ""
+    ca_file: ""
+  agent_dir: ""  # Path to agent/ directory, e.g. /path/to/Apex/agent
+
+database:
+  postgres:
+    host: "localhost"
+    port: 5432
+    user: "apex"
+    password: ""  # Set your PostgreSQL password
+    dbname: "apex"
+    sslmode: "disable"
+  redis:
+    addr: "localhost:6379"
+    password: ""
+    db: 0
+
+auth:
+  jwt_secret: ""  # Set a strong random secret for production
+  token_expiry: "24h"
+
+logging:
+  level: "debug"
+  pretty: true
