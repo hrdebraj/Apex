@@ -2,6 +2,7 @@ package api
 
 import (
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
 
@@ -258,6 +260,17 @@ func (h *PayloadHandler) GetBOFData(id string) ([]byte, error) {
 		}
 	}
 	return nil, fmt.Errorf("BOF not found: %s", id)
+}
+
+func (h *PayloadHandler) ServeBOFData(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	data, err := h.GetBOFData(id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	b64 := base64.StdEncoding.EncodeToString(data)
+	writeJSON(w, http.StatusOK, map[string]string{"data": b64})
 }
 
 func (h *PayloadHandler) DeleteBOF(w http.ResponseWriter, r *http.Request) {

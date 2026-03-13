@@ -307,7 +307,7 @@ apex/
 │   │   │   ├── pages/                  #   Dashboard, Listeners, Agents, Terminal, AgentBuilder,
 │   │   │                           #   Modules, Graph, Mitre, Credentials, FileBrowser, ProcessTree, Settings
 │   │   ├── stores/                 #   Zustand state management
-│   │   ├── services/               #   API client, task, listener, payload services
+│   │   ├── services/               #   API client, task, listener, payload, BOF packer services
 │   │   ├── components/             #   Layout, Sidebar (glitch effects), TopBar
 │   │   ├── styles/                 #   globals.css (glitch, scan line, pulse animations)
 │   │   └── hooks/                  #   useSSE, usePolling
@@ -429,7 +429,7 @@ apex/
 | `screenshot`                         | Capture target screen (saved on server)  |
 | `keylogger <start\|stop\|dump>`      | Keyboard logger (Windows)                |
 | `portscan <ip/cidr> <ports>`         | Built-in TCP port scanner                |
-| `bof <b64_obj> [b64_args]`           | Execute BOF in-memory                    |
+| `bof <name> [args]`                  | Auto-resolve, fetch & execute BOF (Windows) |
 | `steal_token <pid>`                  | Steal token from process (Windows)       |
 | `make_token <user> <pass>`           | Create token with credentials (Windows)  |
 | `rev2self`                           | Revert to original token (Windows)       |
@@ -546,6 +546,32 @@ Full in-memory COFF loader compatible with Cobalt Strike BOFs. Supports x86_64 r
 
 `BeaconDataParse`, `BeaconDataInt`, `BeaconDataShort`, `BeaconDataLength`, `BeaconDataExtract`, `BeaconOutput`, `BeaconPrintf`, `BeaconUseToken`, `BeaconRevertToken`, `BeaconIsAdmin`, `BeaconGetSpawnTo`, `BeaconSpawnTemporaryProcess`, `BeaconInjectProcess`, `BeaconInjectTemporaryProcess`
 
+### BOF Execution — By Name
+
+The operator terminal supports **BOF-by-name execution**. Upload a `.o` / `.obj` file via the Modules page, then run it by name — the client automatically resolves the BOF, fetches its binary data from the server, packs arguments, and sends everything to the agent. No manual base64 encoding required.
+
+```
+bof whoami_bof                          # No args
+bof netview 192.168.1.5                 # Default: wide string arg
+bof psexec Z:target Z:svc Z:cmd.exe    # Explicit wide strings
+bof custom_bof i:443 z:narrow_str      # Mixed types
+```
+
+### Argument Packer
+
+The client includes a built-in argument packer compatible with `BeaconDataParse`. Typed prefixes control the binary format:
+
+| Prefix | Type | Binary Format |
+| ------ | ---- | ------------- |
+| *(none)* | Wide string (UTF-16LE) | `[4-byte len][wchar data + null]` |
+| `Z:` | Wide string (explicit) | Same as above |
+| `z:` | Narrow string (UTF-8) | `[4-byte len][char data + null]` |
+| `i:` | 32-bit integer | `[4-byte LE value]` |
+| `s:` | 16-bit short | `[2-byte LE value]` |
+| `b:` | Raw binary blob | `[4-byte len][base64-decoded bytes]` |
+
+> **Note:** BOFs are Windows-only. The terminal blocks execution on Linux/macOS agents with a clear error.
+
 ### Available BOF Templates
 
 **Lateral Movement:**
@@ -572,11 +598,12 @@ Full in-memory COFF loader compatible with Cobalt Strike BOFs. Supports x86_64 r
 
 ### API
 
-| Method   | Endpoint                       | Description                  |
-| -------- | ------------------------------ | ---------------------------- |
-| `GET`    | `/api/payloads/bofs`           | List uploaded BOFs           |
-| `POST`   | `/api/payloads/bofs`           | Upload BOF (.o/.obj)         |
-| `DELETE` | `/api/payloads/bofs?id=<uuid>` | Delete BOF                   |
+| Method   | Endpoint                        | Description                          |
+| -------- | ------------------------------- | ------------------------------------ |
+| `GET`    | `/api/payloads/bofs`            | List uploaded BOFs                   |
+| `GET`    | `/api/payloads/bofs/{id}/data`  | Fetch BOF binary as base64           |
+| `POST`   | `/api/payloads/bofs`            | Upload BOF (.o/.obj)                 |
+| `DELETE` | `/api/payloads/bofs?id=<uuid>`  | Delete BOF                           |
 
 ---
 
@@ -850,7 +877,7 @@ sudo systemctl enable --now apex-teamserver
 ### ✅ Recently Completed
 
 <details>
-<summary><strong>Click to expand completed items (16 issues closed)</strong></summary>
+<summary><strong>Click to expand completed items (18 issues closed)</strong></summary>
 
 #### BOF Loader & Module System
 - [x] ✅ **Fix IAT `VirtualAlloc` leak in `bof.h`** (#64) — Added `iat_tracker` struct to dynamically track all `VirtualAlloc`'d IAT entries during relocation. All entries freed in `bof_exec` cleanup block.
@@ -872,6 +899,10 @@ sudo systemctl enable --now apex-teamserver
 - [x] ✅ **Build out Attack Graph page** (#49) — Enhanced with OS-specific emoji icons on agent nodes, alive/dead statistics on server node, per-listener agent counts, and double-click agent to open terminal.
 - [x] ✅ **Interactive file browser** (#50) — Full `FileBrowserPage.tsx` with breadcrumb navigation, file/folder table, upload (reads file → base64 → sends), download, and parsing for both Windows `dir` and Linux `ls -la`.
 - [x] ✅ **Process tree visualization** (#51) — `ProcessTreePage.tsx` with expandable tree hierarchy, handles 3-column (Windows) and 4-column (Linux) `ps` output, agent PID highlight, search with ancestor expansion, kill button.
+
+#### BOF Usability — Execution & Packing
+- [x] ✅ **BOF-by-name execution** — Terminal now auto-resolves BOF names, fetches binary data from the server via `GET /api/payloads/bofs/{id}/data`, and sends it to the agent. No manual base64 encoding needed.
+- [x] ✅ **BOF argument packer in client UI** — Built-in `bofPacker.ts` produces binary data compatible with `BeaconDataParse`/`BeaconDataExtract`/`BeaconDataInt`/`BeaconDataShort`. Supports typed prefixes: `i:` (int32), `s:` (short), `z:` (narrow string), `Z:` (wide string, default), `b:` (binary blob). Operator types `bof psexec Z:target Z:svc Z:cmd.exe` and arguments are automatically packed and base64-encoded.
 
 </details>
 
@@ -943,7 +974,6 @@ sudo systemctl enable --now apex-teamserver
 
 ### 🔓 Open — BOF Loader
 
-- [ ] 🟡 **BOF argument packer in client UI** — Typed Pack API like CS's `bof_pack`.
 - [ ] 🟡 **Expand built-in BOF library** — `Seatbelt`, `Rubeus`, `SharpView`, `nanodump`.
 - [ ] 🟡 **Categorised BOF storage** — Tag by category in database.
 - [ ] 🟢 **x86 BOF support** — COFF loader for `IMAGE_FILE_MACHINE_I386`.
