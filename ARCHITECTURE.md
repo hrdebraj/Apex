@@ -1259,35 +1259,169 @@ flowchart LR
 
 ---
 
+## Credential Auto-Capture Flow
+
+Shows how credentials are automatically extracted from agent task output and stored in the vault.
+
+```mermaid
+sequenceDiagram
+    participant Agent as Agent (Target)
+    participant Listener as HTTP Listener
+    participant Vault as Credential Vault
+    participant DB as PostgreSQL
+    participant UI as Operator Client
+
+    Agent->>Listener: POST /check-in (task results)
+    Listener->>Listener: base64 decode output
+    Listener->>Vault: ParseOutput(agentID, output)
+    
+    Note over Vault: Regex matching:<br/>SAM: user:rid:lm:ntlm:::<br/>NTLM: DOMAIN\user:hash<br/>Plaintext: Username: X Password: Y
+
+    alt Credentials found
+        Vault->>DB: INSERT INTO credentials
+        Vault->>Listener: log "Credential captured"
+    end
+    
+    Listener->>UI: SSE agent:task_result
+    UI->>UI: Display result in terminal
+
+    Note over UI: Credentials page fetches<br/>GET /api/credentials<br/>Shows type-coded table
+```
+
+---
+
+## Agent Collection Modules
+
+Architecture of the agent-side collection capabilities (screenshot, keylogger, port scanner).
+
+```mermaid
+flowchart TB
+    subgraph WIN["Windows Agent Modules"]
+        SS_W["screenshot.h<br/>GDI BitBlt → BMP<br/>Scaled to 640px<br/>base64 encoded"]
+        KL["keylogger.h<br/>WH_KEYBOARD_LL hook<br/>Background thread<br/>start/stop/dump"]
+        PS_W["portscan.h<br/>TCP connect scan<br/>Winsock2 select()<br/>CIDR + port ranges"]
+    end
+
+    subgraph POSIX["POSIX Agent Modules"]
+        SS_P["screenshot (posix)<br/>scrot / import fallback<br/>Read temp file<br/>base64 encoded"]
+        PS_P["portscan.h<br/>TCP connect scan<br/>poll() non-blocking<br/>CIDR + port ranges"]
+    end
+
+    subgraph SERVER["Team Server Processing"]
+        BMP["BMP Detection<br/>Check magic bytes 'BM'<br/>Save to data/screenshots/<br/>Replace output with path"]
+        CRED["Credential Parser<br/>SAM hash regex<br/>NTLM hash regex<br/>Plaintext pair regex"]
+    end
+
+    SS_W -->|base64 BMP| BMP
+    SS_P -->|base64 BMP| BMP
+    KL -->|base64 text| CRED
+    PS_W -->|base64 text| CRED
+    PS_P -->|base64 text| CRED
+```
+
+---
+
+## BOF Template Library
+
+Organization of the Beacon Object File templates by category.
+
+```mermaid
+flowchart LR
+    subgraph BOF["BOF Library (bofs/)"]
+        direction TB
+        API["bof_api.h<br/>BeaconAPI declarations<br/>datap struct<br/>CALLBACK constants"]
+        
+        subgraph LAT["lateral/"]
+            PSEXEC["psexec.c<br/>T1021.002<br/>SCM service creation"]
+            SCSHELL["scshell.c<br/>T1543.003<br/>Service binary hijack"]
+            WMIEXEC["wmiexec.c<br/>T1047<br/>WMI COM execution"]
+        end
+
+        subgraph RECON["recon/"]
+            NETVIEW["netview.c<br/>T1135<br/>NetShareEnum"]
+            WHOAMI["whoami_bof.c<br/>T1033<br/>Token interrogation"]
+        end
+
+        subgraph PERSIST["persist/"]
+            SCHTASK["schtask.c<br/>T1053.005<br/>Scheduled tasks"]
+            REGRUN["registry_run.c<br/>T1547.001<br/>Run key persistence"]
+        end
+    end
+
+    API --> LAT
+    API --> RECON
+    API --> PERSIST
+```
+
+---
+
+## Operator Client Page Architecture
+
+```mermaid
+flowchart TB
+    subgraph CLIENT["Operator Client (Tauri + React)"]
+        direction TB
+        DASH["Dashboard<br/>Agent count, listener health"]
+        LIST["Listeners<br/>Create/start/stop"]
+        AGENT["Agents<br/>Live table with status"]
+        TERM["Terminal<br/>Per-agent interactive shell"]
+        BUILD["Agent Builder<br/>Win/Linux/macOS tabs"]
+        MOD["Modules<br/>BOF + profiles"]
+        CRED_UI["Credentials<br/>Auto-captured vault<br/>Type badges, search"]
+        FB["File Browser<br/>Breadcrumb nav<br/>Upload/download"]
+        PT["Process Tree<br/>Expandable hierarchy<br/>Search, kill"]
+        GRAPH["Attack Graph<br/>OS icons, stats<br/>Double-click interact"]
+        MITRE["MITRE ATT&CK<br/>Tabbed matrix/timeline"]
+        SET["Settings<br/>Server config"]
+    end
+
+    subgraph STORES["Zustand Stores"]
+        AS["agentStore"]
+        LS["listenerStore"]
+        TRS["taskResultStore"]
+        TS["terminalStore"]
+        MS["mitreStore"]
+        OS_["opsecStore"]
+        AUTH["authStore"]
+    end
+
+    CRED_UI -->|GET/POST/DELETE| API_CRED["/api/credentials"]
+    FB -->|taskService| TERM
+    PT -->|taskService| TERM
+    GRAPH -->|double-click| TERM
+```
+
+---
+
 ## Microsoft Threat Modeling Tool Elements
 
 Summary for recreating in Microsoft TMT:
 
 **External Entities (Interactors):**
 - Operator Client - Tauri/React desktop app (trusted)
-- Windows Target Host - Windows C implant with PE output, BOF + token manipulation (untrusted)
-- Linux Target Host - POSIX C implant with ELF output (untrusted)
-- macOS Target Host - POSIX C implant with Mach-O output (untrusted)
+- Windows Target Host - Windows C implant with PE output, BOF + token manipulation + keylogger + screenshot (untrusted)
+- Linux Target Host - POSIX C implant with ELF output + screenshot + portscan (untrusted)
+- macOS Target Host - POSIX C implant with Mach-O output + screenshot + portscan (untrusted)
 - MinGW Compiler - Windows cross-compiler (trusted, local)
 - GCC Compiler - Linux native compiler (trusted, local)
 - osxcross/clang Compiler - macOS cross-compiler (trusted, local)
 - Domain Controller - AD target for lateral movement (untrusted)
 
 **Processes:**
-- HTTP API Router, Auth Service, Task Handler, Task Queue, Event Hub, HTTP/HTTPS Listener, mTLS Listener, Agent Manager, Multi-Platform Payload Builder, Profile Handler
-- Agent-side: Windows Evasion Module, POSIX Evasion (Linux/macOS), Beacon Loop (WinHTTP / raw TCP), Command Executor, BOF Loader (Windows only), Token Manipulation (Windows only)
+- HTTP API Router, Auth Service, Task Handler, Task Queue, Event Hub, HTTP/HTTPS Listener, mTLS Listener, Agent Manager, Multi-Platform Payload Builder, Profile Handler, Credential Handler, Credential Vault (auto-parser)
+- Agent-side: Windows Evasion Module, POSIX Evasion (Linux/macOS), Beacon Loop (WinHTTP / raw TCP / OpenSSL TLS), Command Executor, BOF Loader (Windows only), Token Manipulation (Windows only), Keylogger (Windows), Screenshot (Windows GDI / POSIX scrot), Port Scanner (cross-platform)
 
 **Data Stores:**
-- PostgreSQL (relational), Redis (queue + pub/sub), Agent Source - Windows (filesystem), Agent Source - POSIX (filesystem), BOF Storage (filesystem), Profile Storage (filesystem), TLS Certificates (filesystem)
+- PostgreSQL (agents, tasks, credentials, operators, operations_log), Redis (task queue + pub/sub), Agent Source - Windows (filesystem), Agent Source - POSIX (filesystem), BOF Storage (filesystem), BOF Templates (bofs/lateral, bofs/recon, bofs/persist), Profile Storage (filesystem), TLS Certificates (filesystem), Screenshot Storage (data/screenshots/)
 
 **Trust Boundaries:**
-- C2 Infrastructure, Team Server Process, HTTP Transport, mTLS Transport, Target Network, Agent Process, Database Layer, Client Application, Profile Storage
+- C2 Infrastructure, Team Server Process, HTTP Transport, mTLS Transport, Target Network, Agent Process, Database Layer, Client Application, Profile Storage, Screenshot Storage
 
 **Data Flows:**
-- 31 flows as documented in the Data Flow Inventory table above
+- 35+ flows as documented in the Data Flow Inventory table above
 - Each with source, destination, protocol, data content, auth method, encryption status
-- Key additions from baseline: mTLS flows (DF10-DF11), profile flows (DF27-DF29), token operations (DF30), multi-platform agent flows (DF6-DF9), CA cert flow (DF31)
+- Key additions: credential auto-capture flows (DF32-DF34), screenshot save flow (DF35), multi-task batch flow, OpenSSL TLS for POSIX agents
 
 ---
 
-*Generated for Apex C2 Framework v0.2.0. All Mermaid diagrams render natively on GitHub without HTML dependencies.*
+*Updated for Apex C2 Framework. All Mermaid diagrams render natively on GitHub without HTML dependencies.*
