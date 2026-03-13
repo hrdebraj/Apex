@@ -866,6 +866,12 @@ sudo systemctl enable --now apex-teamserver
 2. Test PostgreSQL: `psql -h localhost -U apex -d apex`
 3. Test Redis: `redis-cli ping`
 
+### Agent stops after BOF execution / no BOF result
+
+1. **OPSEC confirmation** — When you type `y` to confirm a risky command, ensure you're not in a state where `y` gets sent as a separate task. The client now intercepts `y`/`n` before sending to the agent.
+2. **BOF crash** — A buggy or incompatible BOF can crash the agent process (access violation, etc.). The agent has no SEH around BOF execution (MinGW limitation), so the whole process exits. Use only trusted, tested BOFs; verify BOFs in an isolated VM first.
+3. **Argument format** — Ensure BOF arguments use the correct packer prefixes (`Z:` for wide strings, `z:` for narrow, etc.). Mismatched formats can cause the BOF to read invalid memory and crash.
+
 ---
 
 ## Roadmap / TODO
