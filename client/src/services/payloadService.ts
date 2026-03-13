@@ -55,4 +55,7 @@ export const payloadService = {
 
   deleteBOF: (id: string) =>
     apiClient.delete<{ status: string }>(`/api/payloads/bofs?id=${id}`),
+
+  getBOFData: (id: string) =>
+    apiClient.get<{ data: string }>(`/api/payloads/bofs/${id}/data`),
 };

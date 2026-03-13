@@ -88,6 +88,7 @@ func NewRouter(a *API) http.Handler {
 
 			r.Post("/payloads/generate", payloadHandler.Generate)
 			r.Get("/payloads/bofs", payloadHandler.ListBOFs)
+			r.Get("/payloads/bofs/{id}/data", payloadHandler.ServeBOFData)
 			r.Post("/payloads/bofs", payloadHandler.UploadBOF)
 			r.Delete("/payloads/bofs", payloadHandler.DeleteBOF)
 
