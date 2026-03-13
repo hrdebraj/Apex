@@ -6,7 +6,7 @@ export default function GraphPage() {
       <div className="flex items-center justify-between mb-3">
         <h2 className="text-lg font-semibold text-apex-text">Attack Graph</h2>
         <span className="text-xs text-apex-muted">
-          Drag nodes to rearrange. Scroll to zoom.
+          Drag to rearrange. Scroll to zoom. Double-click agent to interact.
         </span>
       </div>
       <div className="flex-1 apex-card overflow-hidden rounded-lg">

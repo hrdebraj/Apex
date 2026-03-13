@@ -9,6 +9,7 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"apex/teamserver/internal/agents"
+	"apex/teamserver/internal/credentials"
 	"apex/teamserver/internal/tasks"
 )
 
@@ -16,14 +17,16 @@ type Manager struct {
 	listeners map[string]Listener
 	agents    *agents.Manager
 	tasks     *tasks.Queue
+	creds     *credentials.Vault
 	mu        sync.RWMutex
 }
 
-func NewManager(agentMgr *agents.Manager, taskQueue *tasks.Queue) *Manager {
+func NewManager(agentMgr *agents.Manager, taskQueue *tasks.Queue, credVault *credentials.Vault) *Manager {
 	return &Manager{
 		listeners: make(map[string]Listener),
 		agents:    agentMgr,
 		tasks:     taskQueue,
+		creds:     credVault,
 	}
 }
 
@@ -35,9 +38,9 @@ func (m *Manager) Create(cfg Config) (Listener, error) {
 	var l Listener
 	switch cfg.Protocol {
 	case ProtocolHTTP, ProtocolHTTPS:
-		l = NewHTTP(cfg, m.agents, m.tasks)
+		l = NewHTTP(cfg, m.agents, m.tasks, m.creds)
 	case ProtocolMTLS:
-		l = NewMTLS(cfg, m.agents, m.tasks)
+		l = NewMTLS(cfg, m.agents, m.tasks, m.creds)
 	case ProtocolDNS:
 		l = NewDNS(cfg)
 	case ProtocolTCP:

