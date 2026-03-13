@@ -167,6 +167,18 @@ export default function TerminalPage() {
     addLine("input", cmd);
     setInput("");
 
+    // OPSEC confirmation: if awaiting y/n, intercept before sending to agent
+    if (pendingCommand && (cmd.toLowerCase() === "y" || cmd.toLowerCase() === "n")) {
+      const toRun = pendingCommand;
+      setPendingCommand(null);
+      if (cmd.toLowerCase() === "y") {
+        executeCommand(toRun);
+      } else {
+        addLine("info", "Command cancelled.");
+      }
+      return;
+    }
+
     // Built-in commands
     if (cmd === "clear" || cmd === "cls") {
       clearSession(sessionKey);
@@ -252,22 +264,6 @@ export default function TerminalPage() {
 
     await executeCommand(cmd);
   };
-
-  // Handle confirm/deny for OPSEC warnings
-  useEffect(() => {
-    if (pendingCommand && history.length > 0) {
-      const last = history[history.length - 1];
-      if (last.type === "input") {
-        if (last.text.toLowerCase() === "y") {
-          setPendingCommand(null);
-          executeCommand(pendingCommand);
-        } else {
-          addLine("info", "Command cancelled.");
-          setPendingCommand(null);
-        }
-      }
-    }
-  }, [history]);
 
   const cmdHistory = session.cmdHistory;
   const openedAgentIds = useTerminalStore((s) => s.openedAgentIds);

