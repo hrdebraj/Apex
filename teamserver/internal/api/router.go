@@ -10,6 +10,7 @@ import (
 
 	"apex/teamserver/internal/agents"
 	"apex/teamserver/internal/auth"
+	"apex/teamserver/internal/credentials"
 	"apex/teamserver/internal/listeners"
 	"apex/teamserver/internal/tasks"
 )
@@ -19,6 +20,7 @@ type API struct {
 	Agents     *agents.Manager
 	Listeners  *listeners.Manager
 	Tasks      *tasks.Queue
+	Creds      *credentials.Vault
 	DB         *pgxpool.Pool
 	EventHub   *EventHub
 	ProfileDir string
@@ -45,6 +47,7 @@ func NewRouter(a *API) http.Handler {
 	listenerHandler := NewListenerHandler(a.Listeners)
 	agentHandler := NewAgentHandler(a.Agents)
 	taskHandler := NewTaskHandler(a.Tasks, a.Agents)
+	credHandler := NewCredentialHandler(a.Creds)
 	profileHandler := NewProfileHandler(a.ProfileDir)
 	payloadHandler := NewPayloadHandler(a.Listeners, a.AgentDir)
 
@@ -73,6 +76,10 @@ func NewRouter(a *API) http.Handler {
 
 			r.Post("/agents/{agentID}/tasks", taskHandler.Create)
 			r.Get("/agents/{agentID}/tasks", taskHandler.ListByAgent)
+
+			r.Get("/credentials", credHandler.List)
+			r.Post("/credentials", credHandler.Add)
+			r.Delete("/credentials/{id}", credHandler.Delete)
 
 			r.Get("/profiles", profileHandler.List)
 			r.Post("/profiles", profileHandler.Upload)

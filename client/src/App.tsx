@@ -12,6 +12,9 @@ import GraphPage from "./pages/GraphPage";
 import MitrePage from "./pages/MitrePage";
 import ModulesPage from "./pages/ModulesPage";
 import SettingsPage from "./pages/SettingsPage";
+import CredentialsPage from "./pages/CredentialsPage";
+import FileBrowserPage from "./pages/FileBrowserPage";
+import ProcessTreePage from "./pages/ProcessTreePage";
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
@@ -46,6 +49,9 @@ export default function App() {
         <Route path="mitre" element={<MitrePage />} />
         <Route path="modules" element={<ModulesPage />} />
         <Route path="settings" element={<SettingsPage />} />
+        <Route path="credentials" element={<CredentialsPage />} />
+        <Route path="file-browser" element={<FileBrowserPage />} />
+        <Route path="process-tree" element={<ProcessTreePage />} />
       </Route>
     </Routes>
   );

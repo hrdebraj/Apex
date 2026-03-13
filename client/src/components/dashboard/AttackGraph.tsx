@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from "react";
+import { useCallback, useMemo, useState } from "react";
 import {
   ReactFlow,
   Background,
@@ -15,48 +15,69 @@ import {
 import "@xyflow/react/dist/style.css";
 import { useAgentStore } from "../../stores/agentStore";
 import { useListenerStore } from "../../stores/listenerStore";
-import { Radio, Monitor, Server } from "lucide-react";
+import { Radio, Monitor, Server, Terminal, Skull } from "lucide-react";
+import { useNavigate } from "react-router-dom";
 
-// Custom node for the team server
+function osIcon(os: string) {
+  const lower = (os || "").toLowerCase();
+  if (lower.includes("windows")) return "🪟";
+  if (lower.includes("darwin") || lower.includes("macos") || lower.includes("mac")) return "🍎";
+  if (lower.includes("linux")) return "🐧";
+  return "💻";
+}
+
 function TeamServerNode({ data }: { data: any }) {
   return (
-    <div className="px-4 py-3 rounded-lg bg-apex-accent/20 border border-apex-accent/40 text-center min-w-[120px]">
+    <div className="px-4 py-3 rounded-lg bg-apex-accent/20 border border-apex-accent/40 text-center min-w-[140px]">
       <Handle type="source" position={Position.Bottom} className="!bg-apex-accent !w-2 !h-2" />
       <Server className="w-5 h-5 text-apex-accent mx-auto mb-1" />
       <div className="text-xs font-semibold text-apex-accent">{data.label}</div>
       <div className="text-[10px] text-apex-muted">{data.sub}</div>
+      {data.stats && (
+        <div className="flex items-center justify-center gap-3 mt-1.5 text-[9px] font-mono">
+          <span className="text-apex-accent">{data.stats.alive} alive</span>
+          <span className="text-apex-muted">{data.stats.dead} dead</span>
+        </div>
+      )}
     </div>
   );
 }
 
-// Custom node for listeners
 function ListenerNode({ data }: { data: any }) {
   return (
-    <div className="px-3 py-2.5 rounded-lg bg-apex-warning/15 border border-apex-warning/30 text-center min-w-[110px]">
+    <div className="px-3 py-2.5 rounded-lg bg-apex-warning/15 border border-apex-warning/30 text-center min-w-[120px]">
       <Handle type="target" position={Position.Top} className="!bg-apex-warning !w-2 !h-2" />
       <Handle type="source" position={Position.Bottom} className="!bg-apex-warning !w-2 !h-2" />
       <Radio className="w-4 h-4 text-apex-warning mx-auto mb-1" />
       <div className="text-xs font-medium text-apex-text">{data.label}</div>
       <div className="text-[10px] text-apex-muted font-mono">{data.sub}</div>
+      {data.agentCount !== undefined && (
+        <div className="text-[9px] text-apex-muted mt-0.5">{data.agentCount} agents</div>
+      )}
     </div>
   );
 }
 
-// Custom node for agents
 function AgentNode({ data }: { data: any }) {
   const alive = data.alive;
   return (
-    <div className={`px-3 py-2.5 rounded-lg border text-center min-w-[110px] ${
+    <div className={`px-3 py-2.5 rounded-lg border text-center min-w-[130px] ${
       alive
         ? "bg-apex-accent/10 border-apex-accent/30"
         : "bg-apex-muted/10 border-apex-muted/20"
     }`}>
       <Handle type="target" position={Position.Top} className={`!w-2 !h-2 ${alive ? "!bg-apex-accent" : "!bg-apex-muted"}`} />
-      <Monitor className={`w-4 h-4 mx-auto mb-1 ${alive ? "text-apex-accent" : "text-apex-muted"}`} />
+      <div className="flex items-center justify-center gap-1.5 mb-1">
+        <span className="text-sm">{osIcon(data.os)}</span>
+        {alive
+          ? <Monitor className="w-3.5 h-3.5 text-apex-accent" />
+          : <Skull className="w-3.5 h-3.5 text-apex-muted" />
+        }
+      </div>
       <div className="text-xs font-medium text-apex-text">{data.label}</div>
       <div className="text-[10px] text-apex-muted font-mono">{data.sub}</div>
-      <div className={`text-[9px] mt-0.5 ${alive ? "text-apex-accent" : "text-apex-muted"}`}>
-        {alive ? "ALIVE" : "DEAD"}
+      <div className={`text-[9px] mt-0.5 font-mono ${alive ? "text-apex-accent" : "text-apex-muted"}`}>
+        {alive ? "● ALIVE" : "○ DEAD"}
       </div>
     </div>
   );
@@ -70,18 +91,29 @@ const nodeTypes: NodeTypes = {
 
 export default function AttackGraph() {
   const agents = useAgentStore((s) => s.agents);
+  const selectAgent = useAgentStore((s) => s.selectAgent);
   const listeners = useListenerStore((s) => s.listeners);
+  const navigate = useNavigate();
+
+  const onNodeDoubleClick = useCallback((_: any, node: Node) => {
+    if (node.type === "agent" && node.data.agentId) {
+      selectAgent(node.data.agentId as string);
+      navigate(`/terminal?agent=${node.data.agentId}`);
+    }
+  }, [navigate, selectAgent]);
 
   const { initialNodes, initialEdges } = useMemo(() => {
     const nodes: Node[] = [];
     const edges: Edge[] = [];
 
-    // Team server at the top
+    const aliveCount = agents.filter((a) => a.alive).length;
+    const deadCount = agents.length - aliveCount;
+
     nodes.push({
       id: "teamserver",
       type: "teamserver",
       position: { x: 300, y: 20 },
-      data: { label: "Apex Server", sub: "Team Server" },
+      data: { label: "Apex Server", sub: "Team Server", stats: { alive: aliveCount, dead: deadCount } },
     });
 
     // Listeners in the middle
@@ -90,6 +122,7 @@ export default function AttackGraph() {
 
     listeners.forEach((l, i) => {
       const id = `listener-${l.id}`;
+      const agentCount = agents.filter((a) => a.listenerId === l.id).length;
       nodes.push({
         id,
         type: "listener",
@@ -97,6 +130,7 @@ export default function AttackGraph() {
         data: {
           label: l.name,
           sub: `${l.protocol.toUpperCase()}:${l.bindPort}`,
+          agentCount,
         },
       });
       edges.push({
@@ -134,6 +168,8 @@ export default function AttackGraph() {
             label: a.hostname,
             sub: `${a.username} | ${a.internalIp}`,
             alive: a.alive,
+            os: a.os,
+            agentId: a.id,
           },
         });
         edges.push({
@@ -157,6 +193,8 @@ export default function AttackGraph() {
           label: a.hostname,
           sub: `${a.username} | ${a.internalIp}`,
           alive: a.alive,
+          os: a.os,
+          agentId: a.id,
         },
       });
       edges.push({
@@ -182,6 +220,7 @@ export default function AttackGraph() {
         edges={edges}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
+        onNodeDoubleClick={onNodeDoubleClick}
         nodeTypes={nodeTypes}
         fitView
         proOptions={{ hideAttribution: true }}

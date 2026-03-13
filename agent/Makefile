@@ -35,7 +35,7 @@ WIN_CFLAGS += -DENABLE_ETW_PATCH=$(ENABLE_ETW_PATCH)
 WIN_CFLAGS += -DENABLE_AMSI_PATCH=$(ENABLE_AMSI_PATCH)
 WIN_CFLAGS += -DENABLE_SLEEP_ENCRYPT=$(ENABLE_SLEEP_ENCRYPT)
 WIN_CFLAGS += -DENABLE_UNHOOK=$(ENABLE_UNHOOK)
-WIN_LDFLAGS = -lwinhttp -lws2_32 -lbcrypt -static-libgcc
+WIN_LDFLAGS = -lwinhttp -lws2_32 -lbcrypt -lgdi32 -ladvapi32 -static-libgcc
 
 # ── Linux flags ──
 LINUX_CFLAGS  = -Wall -Wextra -O2 -s $(COMMON_DEFS)

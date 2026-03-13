@@ -12,6 +12,9 @@ import {
   LogOut,
   Package,
   Layers,
+  KeyRound,
+  FolderOpen,
+  Network,
 } from "lucide-react";
 
 const navItems = [
@@ -21,6 +24,9 @@ const navItems = [
   { to: "/agent-builder", icon: Package, label: "Agent Builder" },
   { to: "/terminal", icon: Terminal, label: "Terminal" },
   { to: "/modules", icon: Layers, label: "Modules" },
+  { to: "/credentials", icon: KeyRound, label: "Credentials" },
+  { to: "/file-browser", icon: FolderOpen, label: "File Browser" },
+  { to: "/process-tree", icon: Network, label: "Process Tree" },
   { to: "/graph", icon: GitGraph, label: "Attack Graph" },
   { to: "/mitre", icon: Crosshair, label: "MITRE ATT&CK" },
   { to: "/settings", icon: Settings, label: "Settings" },

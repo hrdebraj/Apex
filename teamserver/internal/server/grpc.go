@@ -18,6 +18,7 @@ import (
 	"apex/teamserver/internal/api"
 	"apex/teamserver/internal/auth"
 	"apex/teamserver/internal/config"
+	"apex/teamserver/internal/credentials"
 	grpcsvc "apex/teamserver/internal/grpc"
 	"apex/teamserver/internal/listeners"
 	"apex/teamserver/internal/tasks"
@@ -42,7 +43,8 @@ func New(cfg *config.Config, db *pgxpool.Pool, rdb *redis.Client) (*Server, erro
 	authSvc := auth.NewService(db, cfg.Auth)
 	agentMgr := agents.NewManager(db)
 	taskQueue := tasks.NewQueue(rdb)
-	listenerMgr := listeners.NewManager(agentMgr, taskQueue)
+	credVault := credentials.NewVault(db)
+	listenerMgr := listeners.NewManager(agentMgr, taskQueue, credVault)
 	eventHub := api.NewEventHub()
 
 	// gRPC server with auth interceptors
@@ -75,6 +77,7 @@ func New(cfg *config.Config, db *pgxpool.Pool, rdb *redis.Client) (*Server, erro
 		Agents:     agentMgr,
 		Listeners:  listenerMgr,
 		Tasks:      taskQueue,
+		Creds:      credVault,
 		DB:         db,
 		EventHub:   eventHub,
 		ProfileDir: "profiles",

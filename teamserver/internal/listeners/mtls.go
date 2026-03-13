@@ -14,29 +14,29 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"apex/teamserver/internal/agents"
+	"apex/teamserver/internal/credentials"
 	"apex/teamserver/internal/tasks"
 )
 
 // MTLSListener is an HTTP listener with mutual TLS authentication.
-// Both server and client present certificates — the server validates
-// the client certificate against a trusted CA, providing strong
-// authentication at the transport layer.
 type MTLSListener struct {
 	config   Config
 	server   *http.Server
 	checkins chan CheckIn
 	agents   *agents.Manager
 	tasks    *tasks.Queue
+	creds    *credentials.Vault
 	running  bool
 	mu       sync.RWMutex
 }
 
-func NewMTLS(cfg Config, agentMgr *agents.Manager, taskQueue *tasks.Queue) *MTLSListener {
+func NewMTLS(cfg Config, agentMgr *agents.Manager, taskQueue *tasks.Queue, credVault *credentials.Vault) *MTLSListener {
 	return &MTLSListener{
 		config:   cfg,
 		checkins: make(chan CheckIn, 256),
 		agents:   agentMgr,
 		tasks:    taskQueue,
+		creds:    credVault,
 	}
 }
 
@@ -54,7 +54,7 @@ func (m *MTLSListener) IsRunning() bool {
 }
 
 func (m *MTLSListener) Start(ctx context.Context) error {
-	httpListener := NewHTTP(m.config, m.agents, m.tasks)
+	httpListener := NewHTTP(m.config, m.agents, m.tasks, m.creds)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", httpListener.handleCheckIn)
 
