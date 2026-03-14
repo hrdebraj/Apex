@@ -104,6 +104,8 @@ type GenerateRequest struct {
 	AMSIPatch          bool     `json:"amsi_patch"`
 	HardwareBreakpoint bool     `json:"hardware_breakpoint"`
 	BYOVD              bool     `json:"byovd"`
+	IndirectSyscall    bool     `json:"indirect_syscall"`
+	SyscallMethod      string   `json:"syscall_method"`
 	BOFIDs             []string `json:"bof_ids"`
 	// POSIX evasion (Linux/macOS)
 	AntiDebug    bool `json:"anti_debug"`
@@ -164,6 +166,8 @@ func (h *PayloadHandler) Generate(w http.ResponseWriter, r *http.Request) {
 		UnhookNtdll:      req.UnhookNtdll,
 		ETWPatch:         req.ETWPatch,
 		AMSIPatch:        req.AMSIPatch,
+		IndirectSyscall:  req.IndirectSyscall,
+		SyscallMethod:    req.SyscallMethod,
 	}
 
 	posixEvasion := &builder.PosixEvasionOpts{

