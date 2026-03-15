@@ -23,6 +23,11 @@ ENABLE_SLEEP_ENCRYPT ?= 1
 ENABLE_UNHOOK        ?= 1
 ENABLE_INDIRECT_SYSCALL ?= 1
 SYSCALL_METHOD          ?= 0   # 0=auto, 1=hellsgate(disk), 2=halosgate(mem)
+ENABLE_NT_PROCESS    ?= 1   # Use NtCreateUserProcess instead of CreateProcessA (#7)
+ENABLE_HEAP_ENCRYPT  ?= 1   # XOR-encrypt heap regions during sleep (#4)
+ENABLE_PE_STOMP      ?= 1   # Overwrite MZ/PE header in-memory (defeats pe-sieve)
+PE_STOMP_MODE        ?= 2   # 1=DOS-only, 2=full-NT-headers, 3=sledgehammer
+PE_STOMP_RANDOMISE   ?= 0   # 0=zero-fill, 1=pseudo-random fill
 
 # ── POSIX (Linux/macOS) evasion toggles ──
 ENABLE_ANTI_DEBUG    ?= 1
@@ -39,6 +44,11 @@ WIN_CFLAGS += -DENABLE_SLEEP_ENCRYPT=$(ENABLE_SLEEP_ENCRYPT)
 WIN_CFLAGS += -DENABLE_UNHOOK=$(ENABLE_UNHOOK)
 WIN_CFLAGS += -DENABLE_INDIRECT_SYSCALL=$(ENABLE_INDIRECT_SYSCALL)
 WIN_CFLAGS += -DSYSCALL_METHOD=$(SYSCALL_METHOD)
+WIN_CFLAGS += -DENABLE_NT_PROCESS=$(ENABLE_NT_PROCESS)
+WIN_CFLAGS += -DENABLE_HEAP_ENCRYPT=$(ENABLE_HEAP_ENCRYPT)
+WIN_CFLAGS += -DENABLE_PE_STOMP=$(ENABLE_PE_STOMP)
+WIN_CFLAGS += -DPE_STOMP_MODE=$(PE_STOMP_MODE)
+WIN_CFLAGS += -DPE_STOMP_RANDOMISE=$(PE_STOMP_RANDOMISE)
 WIN_LDFLAGS = -lwinhttp -lws2_32 -lbcrypt -lgdi32 -ladvapi32 -static-libgcc
 
 # ── Linux flags ──

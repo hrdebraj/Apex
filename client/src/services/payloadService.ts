@@ -24,6 +24,11 @@ export interface GeneratePayloadRequest {
   hardware_breakpoint: boolean;
   indirect_syscall: boolean;
   syscall_method: SyscallMethod;
+  nt_process: boolean;     // Issue #7: NtCreateUserProcess instead of CreateProcessA
+  heap_encrypt: boolean;   // Issue #4: XOR-encrypt heap regions during sleep
+  pe_stomp: boolean;       // PE header stomping (defeats pe-sieve/Moneta)
+  pe_stomp_mode: number;   // 1=DOS-only 2=full-NT 3=sledgehammer
+  pe_stomp_randomise: boolean; // false=zero-fill true=pseudo-random
   byovd?: boolean;
   bof_ids?: string[];
   // POSIX evasion (Linux/macOS)

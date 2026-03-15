@@ -98,6 +98,11 @@ export default function AgentBuilderPage() {
   const [hardwareBreakpoint, setHardwareBreakpoint] = useState(false);
   const [indirectSyscall, setIndirectSyscall] = useState(true);
   const [syscallMethod, setSyscallMethod] = useState<SyscallMethod>("auto");
+  const [ntProcess, setNtProcess] = useState(true);   // Issue #7
+  const [heapEncrypt, setHeapEncrypt] = useState(true);   // Issue #4
+  const [peStomp, setPeStomp] = useState(true);   // PE header stomping
+  const [peStompMode, setPeStompMode] = useState(2);      // 1=DOS 2=full-NT 3=sledge
+  const [peStompRandomise, setPeStompRandomise] = useState(false); // fill mode
 
   // POSIX evasion (Linux/macOS)
   const [antiDebug, setAntiDebug] = useState(true);
@@ -163,6 +168,11 @@ export default function AgentBuilderPage() {
         hardware_breakpoint: hardwareBreakpoint,
         indirect_syscall: indirectSyscall,
         syscall_method: syscallMethod,
+        nt_process: ntProcess,
+        heap_encrypt: heapEncrypt,
+        pe_stomp: peStomp,
+        pe_stomp_mode: peStompMode,
+        pe_stomp_randomise: peStompRandomise,
         anti_debug: antiDebug,
         proc_mask: procMask,
         self_delete: selfDelete,
@@ -196,6 +206,7 @@ export default function AgentBuilderPage() {
   };
 
   const currentOutputOptions =
+
     platform === "windows"
       ? winOutputOptions
       : platform === "linux"
@@ -219,8 +230,8 @@ export default function AgentBuilderPage() {
             key={id}
             onClick={() => handlePlatformChange(id)}
             className={`flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-md text-sm font-medium transition-all ${platform === id
-                ? "bg-apex-accent/20 text-apex-accent border border-apex-accent/40 shadow-sm"
-                : "text-apex-muted hover:text-apex-text hover:bg-apex-surface"
+              ? "bg-apex-accent/20 text-apex-accent border border-apex-accent/40 shadow-sm"
+              : "text-apex-muted hover:text-apex-text hover:bg-apex-surface"
               }`}
           >
             <Icon className="w-4 h-4" />
@@ -247,8 +258,8 @@ export default function AgentBuilderPage() {
                   key={value}
                   onClick={() => setOutputFormat(value)}
                   className={`flex items-center gap-2 px-3 py-2 rounded-md text-sm font-mono transition-colors ${outputFormat === value
-                      ? "bg-apex-accent/20 text-apex-accent border border-apex-accent/40"
-                      : "bg-apex-bg border border-apex-border text-apex-muted hover:text-apex-text"
+                    ? "bg-apex-accent/20 text-apex-accent border border-apex-accent/40"
+                    : "bg-apex-bg border border-apex-border text-apex-muted hover:text-apex-text"
                     }`}
                 >
                   <Icon className="w-4 h-4" />
@@ -483,7 +494,125 @@ export default function AgentBuilderPage() {
                   </div>
                 )}
               </div>
-            </div>
+
+              {/* -- NtCreateUserProcess + Heap Encryption -- */}
+              <div className="pt-1 border-t border-apex-border/50 space-y-3">
+                <Toggle
+                  label="NtCreateUserProcess (No ETW exec events)"
+                  checked={ntProcess}
+                  onChange={setNtProcess}
+                />
+                {ntProcess && (
+                  <div className="p-2.5 rounded-md bg-apex-bg border border-apex-border text-xs text-apex-muted leading-relaxed">
+                    <span className="text-apex-accent font-medium">NtCreateUserProcess</span>: replaces{" "}
+                    <code className="text-apex-accent">CreateProcessA</code> with a direct kernel
+                    syscall via the HellsGate/HalosGate engine. Bypasses Win32
+                    shim hooks and suppresses{" "}
+                    <code className="text-apex-accent">Microsoft-Windows-Security-Auditing</code>{" "}
+                    ETW <em>ProcessCreate</em> events that every major EDR monitors.
+                    Falls back to <code className="text-apex-accent">CreateProcessA</code> if the
+                    NT call returns an error.
+                  </div>
+                )}
+
+                <Toggle
+                  label="Heap Encryption During Sleep (XOR sensitive data)"
+                  checked={heapEncrypt}
+                  onChange={setHeapEncrypt}
+                />
+                {heapEncrypt && (
+                  <div className="p-2.5 rounded-md bg-apex-bg border border-apex-border text-xs text-apex-muted leading-relaxed">
+                    <span className="text-apex-accent font-medium">Heap Encryption</span>: XOR-scrambles{" "}
+                    sensitive globals (agent ID, C2 host, port) in-place during
+                    every sleep interval using an 8-byte runtime-random key
+                    generated via{" "}
+                    <code className="text-apex-accent">BCryptGenRandom</code>. Memory dumps
+                    taken during sleep reveal only scrambled bytes — no
+                    plaintext C2 indicators. Zero allocation, self-inverse,
+                    AV/EDR agnostic.
+                  </div>
+                )}
+              </div>
+            
+
+              {/* -- PE Header Stomping -- */}
+              <div className="pt-1 border-t border-apex-border/50 space-y-3">
+                <Toggle
+                  label="PE Header Stomping (defeats pe-sieve / Moneta)"
+                  checked={peStomp}
+                  onChange={setPeStomp}
+                />
+                {peStomp && (
+                  <div className="space-y-2">
+                    <div>
+                      <label className="block text-xs font-medium text-apex-muted mb-1 uppercase tracking-wider">
+                        Stomp Depth
+                      </label>
+                      <div className="grid grid-cols-3 gap-1.5">
+                        {[
+                          { v: 1, label: "DOS-only",     desc: "MZ + 64 B" },
+                          { v: 2, label: "Full NT",      desc: "Recommended" },
+                          { v: 3, label: "Sledgehammer", desc: "Entire page" },
+                        ].map(({ v, label, desc }) => (
+                          <button
+                            key={v}
+                            onClick={() => setPeStompMode(v)}
+                            className={`flex flex-col items-center px-2 py-2 rounded-md text-xs font-medium transition-colors ${
+                              peStompMode === v
+                                ? "bg-apex-accent/20 text-apex-accent border border-apex-accent/40"
+                                : "bg-apex-bg border border-apex-border text-apex-muted hover:text-apex-text"
+                            }`}
+                          >
+                            <span>{label}</span>
+                            <span className="text-[10px] opacity-60 mt-0.5">{desc}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <Toggle
+                      label="Pseudo-random fill (vs zero-fill)"
+                      checked={peStompRandomise}
+                      onChange={setPeStompRandomise}
+                    />
+                    <div className="p-2.5 rounded-md bg-apex-bg border border-apex-border text-xs text-apex-muted leading-relaxed">
+                      {peStompMode === 1 && (
+                        <span>
+                          <span className="text-apex-accent font-medium">DOS-only</span>: zeroes
+                          the first 64 B &mdash; the{" "}
+                          <code className="text-apex-accent">MZ</code> magic, DOS stub,
+                          and <code className="text-apex-accent">e_lfanew</code>. Lightest
+                          touch; blocks all header-keyed scanners.
+                        </span>
+                      )}
+                      {peStompMode === 2 && (
+                        <span>
+                          <span className="text-apex-accent font-medium">Full NT Headers</span>: zeroes
+                          DOS header + NT signature +{" "}
+                          <code className="text-apex-accent">IMAGE_FILE_HEADER</code> +{" "}
+                          <code className="text-apex-accent">IMAGE_OPTIONAL_HEADER</code>.
+                          Defeats <em>pe-sieve</em>, <em>Moneta</em>, and dump forensics.
+                          Section table is preserved for safe runtime execution.
+                        </span>
+                      )}
+                      {peStompMode === 3 && (
+                        <span>
+                          <span className="text-apex-accent font-medium">Sledgehammer</span>: zeroes
+                          the entire <code className="text-apex-accent">SizeOfHeaders</code>{" "}
+                          page (~4 KiB). No PE artifact remains &mdash; obliterates the section
+                          table too. Maximum stealth when no code reads our own headers at runtime.
+                        </span>
+                      )}
+                      {peStompRandomise && (
+                        <span className="block mt-1 text-yellow-400">
+                          + Pseudo-random fill: xorshift32 noise instead of zeros, defeating
+                          scanners that flag large zero-runs as anomalous.
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+</div>
           )}
 
           {platform === "linux" && (
@@ -598,10 +727,10 @@ export default function AgentBuilderPage() {
         {message && (
           <div
             className={`flex-1 px-4 py-2 rounded-md text-sm ${message.type === "success"
-                ? "bg-apex-accent/10 text-apex-accent"
-                : message.type === "error"
-                  ? "bg-apex-danger/10 text-apex-danger"
-                  : "bg-apex-muted/10 text-apex-muted"
+              ? "bg-apex-accent/10 text-apex-accent"
+              : message.type === "error"
+                ? "bg-apex-danger/10 text-apex-danger"
+                : "bg-apex-muted/10 text-apex-muted"
               }`}
           >
             {message.text}
