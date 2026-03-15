@@ -166,8 +166,24 @@ func (h *PayloadHandler) Generate(w http.ResponseWriter, r *http.Request) {
 		platform = builder.PlatformWindows
 	}
 
+	// Map sleep_method string → int (0=plain, 1=Ekko, 2=Foliage)
+	sleepMethodInt := 1 // default: Ekko
+	if !req.SleepObfuscation {
+		sleepMethodInt = 0 // obfuscation disabled → plain sleep
+	} else {
+		switch strings.ToLower(req.SleepMethod) {
+		case "foliage":
+			sleepMethodInt = 2
+		case "none", "plain", "0":
+			sleepMethodInt = 0
+		default: // "ekko" or anything else
+			sleepMethodInt = 1
+		}
+	}
+
 	evasion := &builder.EvasionOpts{
 		SleepObfuscation: req.SleepObfuscation,
+		SleepMethod:      sleepMethodInt,
 		UnhookNtdll:      req.UnhookNtdll,
 		ETWPatch:         req.ETWPatch,
 		AMSIPatch:        req.AMSIPatch,
