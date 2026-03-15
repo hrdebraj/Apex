@@ -14,6 +14,11 @@ import {
   Bug,
   Fingerprint,
   Zap,
+  Cpu,
+  Activity,
+  Lock,
+  FileX2,
+  Terminal,
 } from "lucide-react";
 
 interface BOFFile {
@@ -421,10 +426,16 @@ export default function ModulesPage() {
               {[
                 { icon: Eye, title: "ETW Patching", desc: "Patches EtwEventWrite to blind ETW-based EDR telemetry" },
                 { icon: Bug, title: "AMSI Patching", desc: "Patches AmsiScanBuffer to bypass script/payload scanning" },
-                { icon: Shield, title: "Encrypted Sleep (Ekko)", desc: "XOR-encrypts agent memory during sleep to evade scanners" },
+                { icon: Shield, title: "Sleep Obfuscation (Ekko/Foliage)", desc: "XOR-encrypts agent memory during sleep to evade scanners; Ekko or Foliage ROP-based timer sleep" },
+                { icon: Zap, title: "Encrypted Shellcode (AES-256/ChaCha20)", desc: "Encrypts payload at rest; AES-256 or ChaCha20 for shellcode/DLL builds" },
                 { icon: Fingerprint, title: "ntdll Unhooking", desc: "Replaces hooked ntdll .text section from clean disk copy" },
+                { icon: Cpu, title: "Hardware Breakpoint (DR0-DR3)", desc: "Uses debug registers for stealthy execution flow; evades software breakpoint detection" },
+                { icon: Activity, title: "Indirect Syscalls (HellsGate/HalosGate)", desc: "Reads SSNs from on-disk or in-memory ntdll; executes syscall from own RWX stub, defeating call-stack EDR heuristics" },
+                { icon: Terminal, title: "NtCreateUserProcess", desc: "Replaces CreateProcessA with direct NT syscall; suppresses ETW ProcessCreate events that EDR monitors" },
+                { icon: Lock, title: "Heap Encryption During Sleep", desc: "XOR-scrambles agent ID, C2 host, port in-place during sleep; memory dumps reveal only scrambled bytes" },
+                { icon: FileX2, title: "PE Header Stomping", desc: "Zeroes DOS/NT headers (or full page) to defeat pe-sieve, Moneta, and dump forensics" },
                 { icon: FileCode, title: "BOF Loader", desc: "In-memory COFF loader with full Cobalt Strike BeaconAPI" },
-                { icon: Key, title: "Token Manipulation", desc: "Steal, create, and impersonate tokens (steal_token, make_token, rev2self)" },
+                { icon: Key, title: "Token Manipulation", desc: "Steal, create, and impersonate tokens (steal_token, make_token, rev2self, getprivs, runas)" },
               ].map(({ icon: Icon, title, desc }) => (
                 <div key={title} className="bg-apex-bg/50 rounded-md p-3 border border-apex-border hover:border-apex-accent/20 transition-colors">
                   <div className="flex items-center gap-2 mb-1">
