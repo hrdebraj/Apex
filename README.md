@@ -917,9 +917,9 @@ sudo systemctl enable --now apex-teamserver
 ### 🔓 Open — Windows Agent Evasion & Stealth
 
 - [ ] 🔴 **Implement Ekko / Foliage encrypted sleep** — `encrypted_sleep()` in `evasion.h` is a stub calling plain `Sleep()`. Implement ROP-based timer sleep so agent memory is XOR-encrypted while waiting.
-- [ ] 🔴 **Indirect syscalls (HellsGate / HalosGate)** — Read SSNs directly from ntdll on disk and execute `syscall` inline, bypassing all user-mode hooks.
+~~~- [ ] 🔴 **Indirect syscalls (HellsGate / HalosGate)** — Read SSNs directly from ntdll on disk and execute `syscall` inline, bypassing all user-mode hooks.~~~
 - [ ] 🔴 **Heap encryption during sleep** — XOR-encrypt malloc'd heap regions during sleep so memory dumps reveal nothing.
-- [ ] 🔴 **PE header stomping** — Overwrite `MZ`/`PE` magic and key header fields in-memory after load to defeat `pe-sieve`.
+~~~- [ ] 🔴 **PE header stomping** — Overwrite `MZ`/`PE` magic and key header fields in-memory after load to defeat `pe-sieve`.~~~
 - [ ] 🔴 **PPID spoofing** — Set parent PID to `explorer.exe` / `svchost.exe` when spawning subprocesses.
 - [ ] 🔴 **Replace `CreateProcessA` with `NtCreateUserProcess` syscall** — Avoid `CreateProcess` ETW events.
 - [ ] 🟡 **Stack spoofing** — Spoof call stacks during sleep/wait states to defeat `Hunt-Sleeping-Beacons`.

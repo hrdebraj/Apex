@@ -106,6 +106,11 @@ type GenerateRequest struct {
 	BYOVD              bool     `json:"byovd"`
 	IndirectSyscall    bool     `json:"indirect_syscall"`
 	SyscallMethod      string   `json:"syscall_method"`
+	NtProcess          bool     `json:"nt_process"`   // Issue #7
+	HeapEncrypt        bool     `json:"heap_encrypt"` // Issue #4
+	PeStomp            bool     `json:"pe_stomp"`          // PE header stomping
+	PeStompMode        int      `json:"pe_stomp_mode"`     // 1=DOS-only 2=full-NT 3=sledgehammer
+	PeStompRandomise   bool     `json:"pe_stomp_randomise"` // false=zero true=random
 	BOFIDs             []string `json:"bof_ids"`
 	// POSIX evasion (Linux/macOS)
 	AntiDebug    bool `json:"anti_debug"`
@@ -168,6 +173,11 @@ func (h *PayloadHandler) Generate(w http.ResponseWriter, r *http.Request) {
 		AMSIPatch:        req.AMSIPatch,
 		IndirectSyscall:  req.IndirectSyscall,
 		SyscallMethod:    req.SyscallMethod,
+		NtProcess:        req.NtProcess,
+		HeapEncrypt:      req.HeapEncrypt,
+		PeStomp:          req.PeStomp,
+		PeStompMode:      req.PeStompMode,
+		PeStompRandomise: req.PeStompRandomise,
 	}
 
 	posixEvasion := &builder.PosixEvasionOpts{

