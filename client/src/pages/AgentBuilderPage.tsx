@@ -10,6 +10,7 @@ import {
   type OutputFormat,
   type SleepMethod,
   type EncryptionMethod,
+  type SyscallMethod,
 } from "../services/payloadService";
 import {
   Cpu,
@@ -95,6 +96,8 @@ export default function AgentBuilderPage() {
   const [etwPatch, setEtwPatch] = useState(true);
   const [amsiPatch, setAmsiPatch] = useState(true);
   const [hardwareBreakpoint, setHardwareBreakpoint] = useState(false);
+  const [indirectSyscall, setIndirectSyscall] = useState(true);
+  const [syscallMethod, setSyscallMethod] = useState<SyscallMethod>("auto");
 
   // POSIX evasion (Linux/macOS)
   const [antiDebug, setAntiDebug] = useState(true);
@@ -158,6 +161,8 @@ export default function AgentBuilderPage() {
         etw_patch: etwPatch,
         amsi_patch: amsiPatch,
         hardware_breakpoint: hardwareBreakpoint,
+        indirect_syscall: indirectSyscall,
+        syscall_method: syscallMethod,
         anti_debug: antiDebug,
         proc_mask: procMask,
         self_delete: selfDelete,
@@ -194,8 +199,8 @@ export default function AgentBuilderPage() {
     platform === "windows"
       ? winOutputOptions
       : platform === "linux"
-      ? linuxOutputOptions
-      : macOutputOptions;
+        ? linuxOutputOptions
+        : macOutputOptions;
 
   return (
     <div className="space-y-6">
@@ -213,11 +218,10 @@ export default function AgentBuilderPage() {
           <button
             key={id}
             onClick={() => handlePlatformChange(id)}
-            className={`flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-md text-sm font-medium transition-all ${
-              platform === id
+            className={`flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-md text-sm font-medium transition-all ${platform === id
                 ? "bg-apex-accent/20 text-apex-accent border border-apex-accent/40 shadow-sm"
                 : "text-apex-muted hover:text-apex-text hover:bg-apex-surface"
-            }`}
+              }`}
           >
             <Icon className="w-4 h-4" />
             {label}
@@ -242,11 +246,10 @@ export default function AgentBuilderPage() {
                 <button
                   key={value}
                   onClick={() => setOutputFormat(value)}
-                  className={`flex items-center gap-2 px-3 py-2 rounded-md text-sm font-mono transition-colors ${
-                    outputFormat === value
+                  className={`flex items-center gap-2 px-3 py-2 rounded-md text-sm font-mono transition-colors ${outputFormat === value
                       ? "bg-apex-accent/20 text-apex-accent border border-apex-accent/40"
                       : "bg-apex-bg border border-apex-border text-apex-muted hover:text-apex-text"
-                  }`}
+                    }`}
                 >
                   <Icon className="w-4 h-4" />
                   {label}
@@ -337,8 +340,8 @@ export default function AgentBuilderPage() {
             {platform === "windows"
               ? "Windows OPSEC"
               : platform === "linux"
-              ? "Linux OPSEC"
-              : "macOS OPSEC"}
+                ? "Linux OPSEC"
+                : "macOS OPSEC"}
           </h3>
 
           {platform === "windows" && (
@@ -421,6 +424,65 @@ export default function AgentBuilderPage() {
                 checked={hardwareBreakpoint}
                 onChange={setHardwareBreakpoint}
               />
+
+              {/* ── Indirect Syscalls ── */}
+              <div className="pt-1 border-t border-apex-border/50">
+                <Toggle
+                  label="Indirect Syscalls (HellsGate / HalosGate)"
+                  checked={indirectSyscall}
+                  onChange={setIndirectSyscall}
+                />
+                {indirectSyscall && (
+                  <div className="mt-2 space-y-2">
+                    <select
+                      value={syscallMethod}
+                      onChange={(e) => setSyscallMethod(e.target.value as SyscallMethod)}
+                      className="apex-select text-sm w-full"
+                      style={{ colorScheme: "dark" }}
+                    >
+                      <option value="auto" className="bg-apex-surface text-apex-text">
+                        Auto — HalosGate scan + HellsGate fallback
+                      </option>
+                      <option value="hellsgate" className="bg-apex-surface text-apex-text">
+                        HellsGate — On-disk ntdll SSN read
+                      </option>
+                      <option value="halosgate" className="bg-apex-surface text-apex-text">
+                        HalosGate — In-memory neighbor scan
+                      </option>
+                    </select>
+                    <div className="p-2.5 rounded-md bg-apex-bg border border-apex-border text-xs text-apex-muted leading-relaxed">
+                      {syscallMethod === "auto" && (
+                        <span>
+                          <span className="text-apex-accent font-medium">Auto</span>: reads SSNs
+                          from clean on-disk ntdll first. If any function is hooked,
+                          scans ±32 neighbour stubs by address to derive the correct
+                          SSN. Syscall executes from our own RWX stub — not ntdll —
+                          defeating call-stack EDR heuristics.
+                        </span>
+                      )}
+                      {syscallMethod === "hellsgate" && (
+                        <span>
+                          <span className="text-apex-accent font-medium">HellsGate</span>: maps
+                          ntdll.dll from disk as a clean reference and reads SSNs by
+                          sorting exports by address (index = SSN). Bypasses all
+                          user-mode hooks regardless of what the in-memory copy looks
+                          like. Best when disk I/O isn’t monitored.
+                        </span>
+                      )}
+                      {syscallMethod === "halosgate" && (
+                        <span>
+                          <span className="text-apex-accent font-medium">HalosGate</span>: reads
+                          SSNs directly from in-memory ntdll stubs. If a stub is
+                          hooked, walks forward and backward through neighbours in
+                          export-table address order to find the nearest clean stub
+                          and derives the target SSN by ±offset. Works even if disk
+                          access is restricted or monitored by EDR.
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
           )}
 
@@ -527,21 +589,20 @@ export default function AgentBuilderPage() {
               {platform === "windows"
                 ? "Windows"
                 : platform === "linux"
-                ? "Linux"
-                : "macOS"}{" "}
+                  ? "Linux"
+                  : "macOS"}{" "}
               Payload
             </>
           )}
         </button>
         {message && (
           <div
-            className={`flex-1 px-4 py-2 rounded-md text-sm ${
-              message.type === "success"
+            className={`flex-1 px-4 py-2 rounded-md text-sm ${message.type === "success"
                 ? "bg-apex-accent/10 text-apex-accent"
                 : message.type === "error"
-                ? "bg-apex-danger/10 text-apex-danger"
-                : "bg-apex-muted/10 text-apex-muted"
-            }`}
+                  ? "bg-apex-danger/10 text-apex-danger"
+                  : "bg-apex-muted/10 text-apex-muted"
+              }`}
           >
             {message.text}
           </div>

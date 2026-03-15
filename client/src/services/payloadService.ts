@@ -4,6 +4,7 @@ export type Platform = "windows" | "linux" | "macos";
 export type OutputFormat = "exe" | "dll" | "shellcode" | "service_exe" | "elf" | "macho";
 export type SleepMethod = "none" | "ekko" | "foliage";
 export type EncryptionMethod = "aes256" | "chacha20";
+export type SyscallMethod = "auto" | "hellsgate" | "halosgate";
 
 export interface GeneratePayloadRequest {
   platform: Platform;
@@ -21,6 +22,8 @@ export interface GeneratePayloadRequest {
   etw_patch: boolean;
   amsi_patch: boolean;
   hardware_breakpoint: boolean;
+  indirect_syscall: boolean;
+  syscall_method: SyscallMethod;
   byovd?: boolean;
   bof_ids?: string[];
   // POSIX evasion (Linux/macOS)
