@@ -30,6 +30,7 @@ config.local.yaml
 # IDE
 .idea/
 .vscode/
+.cursor/
 *.swp
 *.swo
 
