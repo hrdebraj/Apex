@@ -6,7 +6,7 @@ server:
     cert_file: ""
     key_file: ""
     ca_file: ""
-  agent_dir: "/home/debraj/Apex/agent" 
+  agent_dir: "/home/kali/Apex/agent" 
 
 database:
   postgres:

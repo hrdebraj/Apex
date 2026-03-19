@@ -221,6 +221,11 @@ sudo apt install -y mingw-w64
 sudo apt install -y docker.io docker-compose-plugin
 sudo systemctl enable --now docker
 sudo usermod -aG docker $USER
+
+# Podman (rootless) instead of Docker — common on Kali with podman-docker
+# sudo apt install -y podman podman-docker docker-compose-plugin
+systemctl --user enable --now podman.socket   # creates /run/user/$UID/podman/podman.sock
+# Optional: sudo touch /etc/containers/nodocker  # silence "Emulate Docker CLI" message
 ```
 
 ### Verify Installation
@@ -862,9 +867,11 @@ sudo systemctl enable --now apex-teamserver
 
 ### Database connection errors
 
-1. Verify containers: `docker ps`
-2. Test PostgreSQL: `psql -h localhost -U apex -d apex`
-3. Test Redis: `redis-cli ping`
+1. Verify containers: `docker ps` or `podman ps`
+2. **Podman rootless:** if you see `Cannot connect ... podman.sock`, run:
+   `systemctl --user enable --now podman.socket` then `make db` again (do **not** use `sudo make db` — the socket is per-user).
+3. Test PostgreSQL: `psql -h localhost -U apex -d apex`
+4. Test Redis: `redis-cli ping`
 
 ### Agent stops after BOF execution / no BOF result
 
