@@ -16,6 +16,7 @@ proto:
 	@mkdir -p $(GO_PROTO_OUT)
 	@echo "[*] Generating protobuf code..."
 	protoc \
+		--proto_path=/usr/include \
 		--proto_path=$(PROTO_DIR) \
 		--go_out=$(GO_PROTO_OUT) \
 		--go_opt=paths=source_relative \
@@ -53,6 +54,11 @@ client-build:
 client-tauri:
 	cd client && npm run tauri dev
 
+# Build Tauri client and copy to release/ (needs: npm, cargo; unset CI if in CI env)
+client-release:
+	@chmod +x scripts/build-client-release.sh 2>/dev/null || true
+	@./scripts/build-client-release.sh
+
 # ─── Agent (payload generation) ────────────────────────────────
 
 agent:
@@ -62,16 +68,32 @@ agent:
 
 # ─── Database ─────────────────────────────────────────────────
 
+# Rootless Podman needs the user socket (creates /run/user/$UID/podman/podman.sock).
+# Run once: systemctl --user enable --now podman.socket
+# Use docker compose if available, else podman compose; fail with a clear message if neither exists
 db:
-	@command -v docker >/dev/null 2>&1 && docker compose -f deployments/docker-compose.yml up -d || \
-	 podman compose -f deployments/docker-compose.yml up -d
+	@systemctl --user start podman.socket 2>/dev/null || true
+	@if command -v docker >/dev/null 2>&1; then \
+		docker compose -f deployments/docker-compose.yml up -d; \
+	elif command -v podman >/dev/null 2>&1; then \
+		podman compose -f deployments/docker-compose.yml up -d; \
+	else \
+		echo "Error: neither docker nor podman found. Install docker.io (or podman) and try again."; exit 1; \
+	fi
 
 db-down:
-	docker compose -f deployments/docker-compose.yml down
+	@systemctl --user start podman.socket 2>/dev/null || true
+	@if command -v docker >/dev/null 2>&1; then docker compose -f deployments/docker-compose.yml down; \
+	elif command -v podman >/dev/null 2>&1; then podman compose -f deployments/docker-compose.yml down; \
+	else echo "Error: neither docker nor podman found."; exit 1; fi
 
 db-reset:
-	docker compose -f deployments/docker-compose.yml down -v
-	docker compose -f deployments/docker-compose.yml up -d
+	@systemctl --user start podman.socket 2>/dev/null || true
+	@if command -v docker >/dev/null 2>&1; then \
+		docker compose -f deployments/docker-compose.yml down -v && docker compose -f deployments/docker-compose.yml up -d; \
+	elif command -v podman >/dev/null 2>&1; then \
+		podman compose -f deployments/docker-compose.yml down -v && podman compose -f deployments/docker-compose.yml up -d; \
+	else echo "Error: neither docker nor podman found."; exit 1; fi
 
 # ─── Clean ────────────────────────────────────────────────────
 
