@@ -103,6 +103,12 @@ export default function AgentBuilderPage() {
   const [peStomp, setPeStomp] = useState(true);   // PE header stomping
   const [peStompMode, setPeStompMode] = useState(2);      // 1=DOS 2=full-NT 3=sledge
   const [peStompRandomise, setPeStompRandomise] = useState(false); // fill mode
+  const [udrl, setUdrl] = useState(true);
+  const [dripLoad, setDripLoad] = useState(true);
+  const [retAddrSpoof, setRetAddrSpoof] = useState(true);
+  const [syntheticFrames, setSyntheticFrames] = useState(true);
+  const [blockDlls, setBlockDlls] = useState(true);
+  const [argSpoof, setArgSpoof] = useState(true);
 
   // POSIX evasion (Linux/macOS)
   const [antiDebug, setAntiDebug] = useState(true);
@@ -173,6 +179,12 @@ export default function AgentBuilderPage() {
         pe_stomp: peStomp,
         pe_stomp_mode: peStompMode,
         pe_stomp_randomise: peStompRandomise,
+        udrl,
+        drip_load: dripLoad,
+        ret_addr_spoof: retAddrSpoof,
+        synthetic_frames: syntheticFrames,
+        block_dlls: blockDlls,
+        arg_spoof: argSpoof,
         anti_debug: antiDebug,
         proc_mask: procMask,
         self_delete: selfDelete,
@@ -609,6 +621,110 @@ export default function AgentBuilderPage() {
                         </span>
                       )}
                     </div>
+                  </div>
+                )}
+              </div>
+
+              {/* -- UDRL + Drip Loading -- */}
+              <div className="pt-1 border-t border-apex-border/50 space-y-3">
+                <Toggle
+                  label="User-Defined Reflective Loader (UDRL)"
+                  checked={udrl}
+                  onChange={setUdrl}
+                />
+                {udrl && (
+                  <div className="p-2.5 rounded-md bg-apex-bg border border-apex-border text-xs text-apex-muted leading-relaxed">
+                    <span className="text-apex-accent font-medium">UDRL</span>: Maps DLLs into memory
+                    without registering them in the PEB module list. Invisible to{" "}
+                    <code className="text-apex-accent">EnumProcessModules</code>,{" "}
+                    <code className="text-apex-accent">toolhelp32</code>, and kernel-mode{" "}
+                    <code className="text-apex-accent">PsSetLoadImageNotifyRoutine</code>{" "}
+                    callbacks. No Sysmon Event ID 7 generated.
+                  </div>
+                )}
+
+                <Toggle
+                  label="Drip-Loading (Gradual Memory Allocation)"
+                  checked={dripLoad}
+                  onChange={setDripLoad}
+                />
+                {dripLoad && (
+                  <div className="p-2.5 rounded-md bg-apex-bg border border-apex-border text-xs text-apex-muted leading-relaxed">
+                    <span className="text-apex-accent font-medium">Drip-Loading</span>: Allocates
+                    memory in small 4 KB pages with random 50–500ms delays between each
+                    allocation. Defeats EDR heuristics that flag sudden large{" "}
+                    <code className="text-apex-accent">VirtualAlloc</code> calls. Final protection
+                    is set to <code className="text-apex-accent">PAGE_EXECUTE_READ</code>{" "}
+                    (RX, not RWX) to avoid RWX memory alerts.
+                  </div>
+                )}
+              </div>
+
+              {/* -- Call Stack Evasion -- */}
+              <div className="pt-1 border-t border-apex-border/50 space-y-3">
+                <Toggle
+                  label="Return Address Spoofing"
+                  checked={retAddrSpoof}
+                  onChange={setRetAddrSpoof}
+                />
+                {retAddrSpoof && (
+                  <div className="p-2.5 rounded-md bg-apex-bg border border-apex-border text-xs text-apex-muted leading-relaxed">
+                    <span className="text-apex-accent font-medium">Return Address Spoofing</span>: Before
+                    sensitive API calls, replaces the return address on the stack with a{" "}
+                    <code className="text-apex-accent">RET</code> gadget (0xC3) found inside a
+                    legitimate signed Microsoft DLL. EDR call-stack walkers see only
+                    Microsoft frames, hiding the agent's unbacked code.
+                  </div>
+                )}
+
+                <Toggle
+                  label="Synthetic Stack Frames"
+                  checked={syntheticFrames}
+                  onChange={setSyntheticFrames}
+                />
+                {syntheticFrames && (
+                  <div className="p-2.5 rounded-md bg-apex-bg border border-apex-border text-xs text-apex-muted leading-relaxed">
+                    <span className="text-apex-accent font-medium">Synthetic Frames</span>: During sleep,
+                    fabricates a plausible call-stack chain through{" "}
+                    <code className="text-apex-accent">RtlUserThreadStart</code> →{" "}
+                    <code className="text-apex-accent">BaseThreadInitThunk</code>. Tools like{" "}
+                    <em>Hunt-Sleeping-Beacons</em> see a normal thread-start chain instead of
+                    unbacked RWX memory. Frames are cleaned up on wake.
+                  </div>
+                )}
+              </div>
+
+              {/* -- Process Execution Evasion -- */}
+              <div className="pt-1 border-t border-apex-border/50 space-y-3">
+                <Toggle
+                  label="BlockDLLs (Block Non-Microsoft DLLs)"
+                  checked={blockDlls}
+                  onChange={setBlockDlls}
+                />
+                {blockDlls && (
+                  <div className="p-2.5 rounded-md bg-apex-bg border border-apex-border text-xs text-apex-muted leading-relaxed">
+                    <span className="text-apex-accent font-medium">BlockDLLs</span>: Child processes
+                    are spawned with{" "}
+                    <code className="text-apex-accent">PROCESS_CREATION_MITIGATION_POLICY_BLOCK_NON_MICROSOFT_BINARIES_ALWAYS_ON</code>.
+                    Windows refuses to load any non-Microsoft-signed DLL — the EDR's
+                    monitoring DLL fails to inject and the child runs unmonitored.
+                    Runtime toggle: <code className="text-apex-accent">blockdlls on/off</code>.
+                  </div>
+                )}
+
+                <Toggle
+                  label="Process Argument Spoofing"
+                  checked={argSpoof}
+                  onChange={setArgSpoof}
+                />
+                {argSpoof && (
+                  <div className="p-2.5 rounded-md bg-apex-bg border border-apex-border text-xs text-apex-muted leading-relaxed">
+                    <span className="text-apex-accent font-medium">Argument Spoofing</span>: Spawns
+                    child processes with benign decoy arguments (logged by EDR/Sysmon Event
+                    ID 1), then overwrites the real command into the suspended process's
+                    PEB <code className="text-apex-accent">CommandLine</code> before resuming.
+                    Telemetry records only the fake arguments.
+                    Runtime toggle: <code className="text-apex-accent">argspoof on/off</code>.
                   </div>
                 )}
               </div>

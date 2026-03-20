@@ -28,7 +28,13 @@ export interface GeneratePayloadRequest {
   heap_encrypt: boolean;   // Issue #4: XOR-encrypt heap regions during sleep
   pe_stomp: boolean;       // PE header stomping (defeats pe-sieve/Moneta)
   pe_stomp_mode: number;   // 1=DOS-only 2=full-NT 3=sledgehammer
-  pe_stomp_randomise: boolean; // false=zero-fill true=pseudo-random
+  pe_stomp_randomise: boolean;
+  udrl: boolean;
+  drip_load: boolean;
+  ret_addr_spoof: boolean;
+  synthetic_frames: boolean;
+  block_dlls: boolean;
+  arg_spoof: boolean;
   byovd?: boolean;
   bof_ids?: string[];
   // POSIX evasion (Linux/macOS)

