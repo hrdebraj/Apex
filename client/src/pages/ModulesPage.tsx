@@ -424,18 +424,24 @@ export default function ModulesPage() {
             </h3>
             <div className="grid grid-cols-2 gap-3 text-sm">
               {[
-                { icon: Eye, title: "ETW Patching", desc: "Patches EtwEventWrite to blind ETW-based EDR telemetry" },
-                { icon: Bug, title: "AMSI Patching", desc: "Patches AmsiScanBuffer to bypass script/payload scanning" },
-                { icon: Shield, title: "Sleep Obfuscation (Ekko/Foliage)", desc: "XOR-encrypts agent memory during sleep to evade scanners; Ekko or Foliage ROP-based timer sleep" },
-                { icon: Zap, title: "Encrypted Shellcode (AES-256/ChaCha20)", desc: "Encrypts payload at rest; AES-256 or ChaCha20 for shellcode/DLL builds" },
-                { icon: Fingerprint, title: "ntdll Unhooking", desc: "Replaces hooked ntdll .text section from clean disk copy" },
-                { icon: Cpu, title: "Hardware Breakpoint (DR0-DR3)", desc: "Uses debug registers for stealthy execution flow; evades software breakpoint detection" },
-                { icon: Activity, title: "Indirect Syscalls (HellsGate/HalosGate)", desc: "Reads SSNs from on-disk or in-memory ntdll; executes syscall from own RWX stub, defeating call-stack EDR heuristics" },
-                { icon: Terminal, title: "NtCreateUserProcess", desc: "Replaces CreateProcessA with direct NT syscall; suppresses ETW ProcessCreate events that EDR monitors" },
-                { icon: Lock, title: "Heap Encryption During Sleep", desc: "XOR-scrambles agent ID, C2 host, port in-place during sleep; memory dumps reveal only scrambled bytes" },
-                { icon: FileX2, title: "PE Header Stomping", desc: "Zeroes DOS/NT headers (or full page) to defeat pe-sieve, Moneta, and dump forensics" },
-                { icon: FileCode, title: "BOF Loader", desc: "In-memory COFF loader with full Cobalt Strike BeaconAPI" },
-                { icon: Key, title: "Token Manipulation", desc: "Steal, create, and impersonate tokens (steal_token, make_token, rev2self, getprivs, runas)" },
+                { icon: Eye, title: "ETW Patching", desc: "Patches EtwEventWrite in ntdll.dll to xor eax,eax; ret — blinds all ETW-based EDR telemetry including process creation, image load, and network events" },
+                { icon: Bug, title: "AMSI Patching", desc: "Patches AmsiScanBuffer to return E_INVALIDARG, defeating AMSI-based script and in-memory payload scanning by Windows Defender and third-party AVs" },
+                { icon: Shield, title: "Sleep Obfuscation (Ekko/Foliage)", desc: "Ekko uses a WaitableTimer kernel object, Foliage uses NtDelayExecution. Both XOR-encrypt heap regions during the wait so memory scanners find no plaintext C2 indicators" },
+                { icon: Zap, title: "Encrypted Shellcode (AES-256/ChaCha20)", desc: "Encrypts the payload at rest using AES-256-CBC or ChaCha20; decrypts at runtime to evade static analysis and signature-based detection" },
+                { icon: Fingerprint, title: "ntdll Unhooking", desc: "Maps a clean copy of ntdll.dll from disk via SEC_IMAGE and replaces the hooked .text section in memory, removing all EDR inline hooks on NT API functions" },
+                { icon: Cpu, title: "Hardware Breakpoint (DR0-DR3)", desc: "Uses x64 debug registers for stealthy execution flow control; evades software breakpoint detection and INT3-based hooks" },
+                { icon: Activity, title: "Indirect Syscalls (HellsGate/HalosGate)", desc: "HellsGate reads SSNs from clean on-disk ntdll, HalosGate scans in-memory neighbors. Syscall executes from our own RWX stub — not ntdll — defeating call-stack EDR heuristics" },
+                { icon: Terminal, title: "NtCreateUserProcess", desc: "Replaces CreateProcessA with a direct NtCreateUserProcess kernel syscall via the HellsGate/HalosGate engine, bypassing Win32 shim hooks and suppressing ETW ProcessCreate events" },
+                { icon: Lock, title: "Heap Encryption During Sleep", desc: "XOR-scrambles sensitive globals (agent ID, C2 host, port) in-place during every sleep interval using an 8-byte runtime-random key from BCryptGenRandom. Memory dumps during sleep reveal only noise" },
+                { icon: FileX2, title: "PE Header Stomping", desc: "Surgically wipes PE header fields (MZ magic, NT signature, section table) after load. Three modes: DOS-only, Full NT Headers, or Sledgehammer. Defeats pe-sieve, Moneta, and dump forensics" },
+                { icon: Shield, title: "UDRL (Reflective Loader)", desc: "User-Defined Reflective Loader maps DLLs into memory without PEB registration. Invisible to EnumProcessModules, toolhelp32, and kernel PsSetLoadImageNotifyRoutine callbacks. No Sysmon Event ID 7" },
+                { icon: Activity, title: "Drip-Loading", desc: "Allocates memory in small 4KB pages with random 50-500ms delays between each allocation, defeating EDR heuristics that flag sudden large VirtualAlloc calls. Final protection set to RX (not RWX)" },
+                { icon: Fingerprint, title: "Return Address Spoofing", desc: "Before sensitive API calls, replaces the return address on the stack with a RET gadget (0xC3) found inside a signed Microsoft DLL. EDR call-stack walkers see only legitimate Microsoft frames" },
+                { icon: Shield, title: "Synthetic Stack Frames", desc: "During sleep, fabricates a plausible call-stack chain through RtlUserThreadStart → BaseThreadInitThunk. Tools like Hunt-Sleeping-Beacons see a normal thread start instead of unbacked RWX memory" },
+                { icon: Lock, title: "BlockDLLs", desc: "Child processes spawned with PROCESS_CREATION_MITIGATION_POLICY_BLOCK_NON_MICROSOFT_BINARIES_ALWAYS_ON. Windows refuses to load non-Microsoft-signed DLLs — EDR monitoring DLLs fail to inject" },
+                { icon: Terminal, title: "Argument Spoofing", desc: "Spawns child processes with benign decoy arguments (logged by EDR/Sysmon), then overwrites the real command into the suspended process PEB CommandLine before resuming. Telemetry records only fake args" },
+                { icon: FileCode, title: "BOF Loader", desc: "Full in-memory COFF loader compatible with Cobalt Strike BOFs. Supports x86_64 relocations, __imp_ symbol resolution, BeaconAPI (DataParse, Printf, Output, InjectProcess, etc.)" },
+                { icon: Key, title: "Token Manipulation", desc: "Steal, create, and impersonate Windows tokens: steal_token (DuplicateTokenEx), make_token (LogonUserA), rev2self (RevertToSelf), getprivs (token privileges), runas (CreateProcessWithLogonW)" },
               ].map(({ icon: Icon, title, desc }) => (
                 <div key={title} className="bg-apex-bg/50 rounded-md p-3 border border-apex-border hover:border-apex-accent/20 transition-colors">
                   <div className="flex items-center gap-2 mb-1">

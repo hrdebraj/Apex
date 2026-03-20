@@ -29,6 +29,12 @@ SLEEP_METHOD         ?= 1   # 0=plain-XOR+Sleep, 1=Ekko-ROP, 2=Foliage-APC
 ENABLE_PE_STOMP      ?= 1   # Overwrite MZ/PE header in-memory (defeats pe-sieve)
 PE_STOMP_MODE        ?= 2   # 1=DOS-only, 2=full-NT-headers, 3=sledgehammer
 PE_STOMP_RANDOMISE   ?= 0   # 0=zero-fill, 1=pseudo-random fill
+ENABLE_UDRL          ?= 1   # User-Defined Reflective Loader (no PEB registration)
+ENABLE_DRIP_LOAD     ?= 1   # Gradual memory allocation evasion
+ENABLE_RET_ADDR_SPOOF ?= 1  # Thread return address spoofing
+ENABLE_SYNTHETIC_FRAMES ?= 1 # Synthetic stack frames during sleep
+ENABLE_BLOCK_DLLS    ?= 1   # Block non-MS DLLs in child processes
+ENABLE_ARG_SPOOF     ?= 1   # Process argument spoofing
 
 # ── POSIX (Linux/macOS) evasion toggles ──
 ENABLE_ANTI_DEBUG    ?= 1
@@ -51,6 +57,12 @@ WIN_CFLAGS += -DSLEEP_METHOD=$(SLEEP_METHOD)
 WIN_CFLAGS += -DENABLE_PE_STOMP=$(ENABLE_PE_STOMP)
 WIN_CFLAGS += -DPE_STOMP_MODE=$(PE_STOMP_MODE)
 WIN_CFLAGS += -DPE_STOMP_RANDOMISE=$(PE_STOMP_RANDOMISE)
+WIN_CFLAGS += -DENABLE_UDRL=$(ENABLE_UDRL)
+WIN_CFLAGS += -DENABLE_DRIP_LOAD=$(ENABLE_DRIP_LOAD)
+WIN_CFLAGS += -DENABLE_RET_ADDR_SPOOF=$(ENABLE_RET_ADDR_SPOOF)
+WIN_CFLAGS += -DENABLE_SYNTHETIC_FRAMES=$(ENABLE_SYNTHETIC_FRAMES)
+WIN_CFLAGS += -DENABLE_BLOCK_DLLS=$(ENABLE_BLOCK_DLLS)
+WIN_CFLAGS += -DENABLE_ARG_SPOOF=$(ENABLE_ARG_SPOOF)
 WIN_LDFLAGS = -lwinhttp -lws2_32 -lbcrypt -lgdi32 -ladvapi32 -static-libgcc
 
 # ── Linux flags ──

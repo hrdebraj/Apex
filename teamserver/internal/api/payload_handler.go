@@ -108,9 +108,15 @@ type GenerateRequest struct {
 	SyscallMethod      string   `json:"syscall_method"`
 	NtProcess          bool     `json:"nt_process"`   // Issue #7
 	HeapEncrypt        bool     `json:"heap_encrypt"` // Issue #4
-	PeStomp            bool     `json:"pe_stomp"`          // PE header stomping
-	PeStompMode        int      `json:"pe_stomp_mode"`     // 1=DOS-only 2=full-NT 3=sledgehammer
-	PeStompRandomise   bool     `json:"pe_stomp_randomise"` // false=zero true=random
+	PeStomp            bool     `json:"pe_stomp"`
+	PeStompMode        int      `json:"pe_stomp_mode"`
+	PeStompRandomise   bool     `json:"pe_stomp_randomise"`
+	UDRL               bool     `json:"udrl"`
+	DripLoad           bool     `json:"drip_load"`
+	RetAddrSpoof       bool     `json:"ret_addr_spoof"`
+	SyntheticFrames    bool     `json:"synthetic_frames"`
+	BlockDLLs          bool     `json:"block_dlls"`
+	ArgSpoof           bool     `json:"arg_spoof"`
 	BOFIDs             []string `json:"bof_ids"`
 	// POSIX evasion (Linux/macOS)
 	AntiDebug    bool `json:"anti_debug"`
@@ -194,6 +200,12 @@ func (h *PayloadHandler) Generate(w http.ResponseWriter, r *http.Request) {
 		PeStomp:          req.PeStomp,
 		PeStompMode:      req.PeStompMode,
 		PeStompRandomise: req.PeStompRandomise,
+		UDRL:             req.UDRL,
+		DripLoad:         req.DripLoad,
+		RetAddrSpoof:     req.RetAddrSpoof,
+		SyntheticFrames:  req.SyntheticFrames,
+		BlockDLLs:        req.BlockDLLs,
+		ArgSpoof:         req.ArgSpoof,
 	}
 
 	posixEvasion := &builder.PosixEvasionOpts{

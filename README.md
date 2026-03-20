@@ -128,7 +128,14 @@ A modern, modular Command & Control framework built for red team operations and 
 
 - HTTP/HTTPS beacon over WinHTTP
 - Configurable sleep interval with jitter (runtime-adjustable)
-- Evasion: ETW patching, AMSI patching, ntdll unhooking, encrypted sleep (Ekko-style)
+- Evasion: ETW patching, AMSI patching, ntdll unhooking, encrypted sleep (Ekko/Foliage)
+- **Indirect syscalls** (HellsGate/HalosGate), NtCreateUserProcess, heap encryption, PE header stomping
+- **UDRL** (User-Defined Reflective Loader) — DLL loading without PEB registration
+- **Drip-Loading** — gradual memory allocation with jittered delays
+- **Return Address Spoofing** — fake return addresses from signed Microsoft DLLs
+- **Synthetic Stack Frames** — fabricated call chains during sleep (defeats Hunt-Sleeping-Beacons)
+- **BlockDLLs** — block non-Microsoft DLLs in child processes (runtime toggle)
+- **Argument Spoofing** — decoy command-line arguments in PEB (runtime toggle)
 - In-memory BOF (Beacon Object File) loader with full Cobalt Strike BeaconAPI
 - **Token manipulation**: steal_token, make_token, rev2self, getprivs, runas
 - **Keylogger**: low-level keyboard hook with start/stop/dump commands
@@ -446,6 +453,8 @@ apex/
 | `rev2self`                           | Revert to original token (Windows)       |
 | `getprivs`                           | List token privileges (Windows)          |
 | `runas <user> <pass> <cmd>`          | Run command as another user (Windows)    |
+| `blockdlls <on\|off>`                | Block non-MS DLLs in child processes     |
+| `argspoof <on\|off>`                 | Spoof process arguments (PEB overwrite)  |
 | `exit`                               | Terminate agent                          |
 
 ---
@@ -469,7 +478,7 @@ apex/
 | `pic_loader.c`  | PIC reflective PE loader: PEB walk, export parsing, PE mapper   |
 | `gen_shellcode.c`| Host combiner: patches offset marker, concatenates stub + DLL  |
 
-**Compile-time flags**: `ENABLE_ETW_PATCH`, `ENABLE_AMSI_PATCH`, `ENABLE_SLEEP_ENCRYPT`, `ENABLE_UNHOOK`
+**Compile-time flags**: `ENABLE_ETW_PATCH`, `ENABLE_AMSI_PATCH`, `ENABLE_SLEEP_ENCRYPT`, `ENABLE_UNHOOK`, `ENABLE_INDIRECT_SYSCALL`, `ENABLE_NT_PROCESS`, `ENABLE_HEAP_ENCRYPT`, `ENABLE_PE_STOMP`, `ENABLE_UDRL`, `ENABLE_DRIP_LOAD`, `ENABLE_RET_ADDR_SPOOF`, `ENABLE_SYNTHETIC_FRAMES`, `ENABLE_BLOCK_DLLS`, `ENABLE_ARG_SPOOF`
 
 **Output formats**: EXE, DLL, **PIC Shellcode** (.bin), Service EXE
 
@@ -634,15 +643,24 @@ The client includes a built-in argument packer compatible with `BeaconDataParse`
 
 ### Windows Evasion
 
-| Technique          | Description                                                                       |
-| ------------------ | --------------------------------------------------------------------------------- |
-| ETW Patching       | Patches `EtwEventWrite` in ntdll.dll (`xor eax,eax; ret`) to blind EDR telemetry |
-| AMSI Patching      | Patches `AmsiScanBuffer` to return `E_INVALIDARG`, bypassing script scanning     |
-| Encrypted Sleep    | XOR-encrypts agent memory during sleep via `SystemFunction032` (Ekko-style)      |
-| ntdll Unhooking    | Replaces hooked ntdll .text section from clean `SEC_IMAGE` disk mapping          |
-| XOR String Encrypt | Compile-time XOR encryption of string literals                                    |
-| AES-256-CBC        | Full CNG-based encryption ready for encrypted C2 comms                            |
-| Token Manipulation | Steal, create, impersonate tokens; list privileges; run as other users           |
+| Technique               | Flag                       | Description                                                               |
+| ----------------------- | -------------------------- | ------------------------------------------------------------------------- |
+| ETW Patching            | `ENABLE_ETW_PATCH`         | Patches `EtwEventWrite` to `xor eax,eax; ret` — blinds all ETW telemetry |
+| AMSI Patching           | `ENABLE_AMSI_PATCH`        | Patches `AmsiScanBuffer` to return `E_INVALIDARG`                         |
+| Sleep Obfuscation       | `SLEEP_METHOD` (0/1/2)     | Ekko (WaitableTimer) or Foliage (NtDelayExecution) + heap XOR encryption  |
+| Heap Encryption         | `ENABLE_HEAP_ENCRYPT`      | XOR-encrypts agent ID, C2 host/port during sleep with BCryptGenRandom key |
+| ntdll Unhooking         | `ENABLE_UNHOOK`            | Replaces hooked ntdll .text from clean `SEC_IMAGE` disk mapping           |
+| Indirect Syscalls       | `ENABLE_INDIRECT_SYSCALL`  | HellsGate/HalosGate SSN resolution; syscall from own RWX stub            |
+| NtCreateUserProcess     | `ENABLE_NT_PROCESS`        | Direct NT syscall for process creation; suppresses ETW ProcessCreate      |
+| PE Header Stomping      | `ENABLE_PE_STOMP`          | Wipes MZ/NT headers in-memory; defeats pe-sieve, Moneta, dump forensics  |
+| UDRL                    | `ENABLE_UDRL`              | Reflective DLL loader without PEB registration; invisible to module enum  |
+| Drip-Loading            | `ENABLE_DRIP_LOAD`         | Gradual 4KB page allocation with 50-500ms jitter; avoids large alloc IOCs |
+| Return Addr Spoofing    | `ENABLE_RET_ADDR_SPOOF`    | Spoofs return addresses with RET gadgets from signed Microsoft DLLs       |
+| Synthetic Stack Frames  | `ENABLE_SYNTHETIC_FRAMES`  | Fake RtlUserThreadStart→BaseThreadInitThunk chain during sleep            |
+| BlockDLLs               | `ENABLE_BLOCK_DLLS`        | Blocks non-Microsoft DLLs in child processes via mitigation policy        |
+| Argument Spoofing       | `ENABLE_ARG_SPOOF`         | Decoy args in PEB; real command written after CREATE_SUSPENDED            |
+| Token Manipulation      | (always on)                | steal_token, make_token, rev2self, getprivs, runas                        |
+| AES-256-CBC             | (always on)                | CNG-based encryption for C2 channel                                       |
 
 ### Linux Evasion
 
