@@ -56,11 +56,16 @@ int main(int argc, char **argv) {
         uint64_t val;
         memcpy(&val, stub + i, 8);
         if (val == MARKER) {
-            /* Replace marker with actual stub size (= PE offset) */
-            uint64_t offset = (uint64_t)stub_size;
-            memcpy(stub + i, &offset, 8);
+            /*
+             * Patch with distance FROM the marker TO the PE data.
+             * The stub code reads &g_pe_offset (which is at stub+i at runtime)
+             * and adds this value: &marker + offset_from_marker = PE start.
+             */
+            uint64_t offset_from_marker = (uint64_t)(stub_size - i);
+            memcpy(stub + i, &offset_from_marker, 8);
             found = 1;
-            printf("[*] Patched PE offset at stub+0x%zx -> %zu bytes\n", i, stub_size);
+            printf("[*] Marker at stub+0x%zx, patched offset = %llu (stub=%zu, PE starts at +%zu)\n",
+                   i, (unsigned long long)offset_from_marker, stub_size, stub_size);
             break;
         }
     }
