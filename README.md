@@ -135,7 +135,8 @@ A modern, modular Command & Control framework built for red team operations and 
 - **Screenshot capture**: GDI-based screen grab, saved server-side as BMP
 - **Port scanner**: built-in TCP connect scan with CIDR and port range support
 - AES-256-CBC encryption via Windows CNG
-- Multiple output formats: EXE, DLL, shellcode (.bin)
+- Multiple output formats: EXE, DLL, **true PIC shellcode** (.bin), Service EXE
+- PIC shellcode: reflective PE loader stub (PEB walk → kernel32 → VirtualAlloc/LoadLibrary) + DLL; injects into any process without a PE loader
 - Multi-task per beacon — processes multiple queued tasks per check-in
 - Process listing, file upload/download, directory navigation, shell execution
 
@@ -330,7 +331,12 @@ apex/
 │   ├── keylogger.h                 #   Windows: WH_KEYBOARD_LL hook, start/stop/dump
 │   ├── screenshot.h                #   Windows: GDI screen capture to BMP
 │   ├── portscan.h                  #   Cross-platform: TCP connect scan, CIDR, port ranges
-│   └── Makefile                    #   Multi-platform: exe, dll, shellcode, linux-elf, macos-macho
+│   ├── pic_loader.c                #   PIC reflective PE loader stub (PEB walk, PE mapper)
+│   ├── gen_shellcode.c             #   Host tool: combines PIC stub + DLL → raw shellcode
+│   └── Makefile                    #   Multi-platform: exe, dll, shellcode (PIC), linux-elf, macos-macho
+│
+├── tools/                          # Testing utilities
+│   └── shellcode_loader.c          #   Sample loader for testing PIC shellcode (.bin)
 │
 ├── bofs/                           # Beacon Object File templates
 │   ├── bof_api.h                   #   BOF compatibility header (BeaconAPI declarations)
@@ -460,10 +466,21 @@ apex/
 | `keylogger.h`   | WH_KEYBOARD_LL hook, background thread, start/stop/dump         |
 | `screenshot.h`  | GDI BitBlt screen capture, scaled BMP, base64 output            |
 | `portscan.h`    | TCP connect scan, CIDR expansion, port ranges (cross-platform)  |
+| `pic_loader.c`  | PIC reflective PE loader: PEB walk, export parsing, PE mapper   |
+| `gen_shellcode.c`| Host combiner: patches offset marker, concatenates stub + DLL  |
 
 **Compile-time flags**: `ENABLE_ETW_PATCH`, `ENABLE_AMSI_PATCH`, `ENABLE_SLEEP_ENCRYPT`, `ENABLE_UNHOOK`
 
-**Output formats**: EXE, DLL, Shellcode (.bin), Service EXE
+**Output formats**: EXE, DLL, **PIC Shellcode** (.bin), Service EXE
+
+**Shellcode generation pipeline**:
+```
+make shellcode
+ ├─ 1. Compile agent as DLL (all evasion flags preserved)
+ ├─ 2. Compile PIC stub (pic_loader.c) → raw binary via objcopy
+ ├─ 3. gen_shellcode patches PE offset marker, concatenates stub + DLL
+ └─ Output: agent.bin (true PIC — executes at any address, no PE loader needed)
+```
 
 ### Linux Agent
 
@@ -514,6 +531,7 @@ builder.BuildBase64()
   │  Set env vars: C2_HOST, C2_PORT, platform evasion flags
   │  exec: make -C agent/ clean
   │  exec: make -C agent/ exe|dll|shellcode|linux-elf|macos-macho
+  │  For shellcode: DLL build → PIC stub compile → gen_shellcode combine
   │  Read output → base64 encode
   ▼
 Response → Client downloads binary
@@ -525,7 +543,7 @@ Response → Client downloads binary
 | -------- | ------------- | ----------------------- | ------------- |
 | Windows  | `exe`         | x86_64-w64-mingw32-gcc  | `agent.exe`   |
 | Windows  | `dll`         | x86_64-w64-mingw32-gcc  | `agent.dll`   |
-| Windows  | `shellcode`   | x86_64-w64-mingw32-gcc  | `agent.bin`   |
+| Windows  | `shellcode`   | x86_64-w64-mingw32-gcc  | `agent.bin` (PIC) |
 | Linux    | `linux-elf`   | gcc (native)            | `agent_linux` |
 | macOS    | `macos-macho` | o64-clang / clang       | `agent_macos` |
 
