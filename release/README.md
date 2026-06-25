@@ -56,6 +56,24 @@ The setup script checks all dependencies and warns about missing ones.
 - **API**: `http://0.0.0.0:8443`
 - **gRPC**: `0.0.0.0:50051`
 
+## Building a Release
+
+From the project root:
+
+```bash
+make package
+```
+
+This builds the team server and client, then copies everything into `release/`:
+binaries, docker-compose, migrations, profiles, agent source, and BOF templates.
+
+To build a distributable zip:
+
+```bash
+make package
+cd release && zip -r ../apex-c2-v1.0.0-linux-amd64.zip .
+```
+
 ## Security
 
 - Change `auth.jwt_secret` in `config.yaml` before production use

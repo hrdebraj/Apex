@@ -1,4 +1,4 @@
-.PHONY: all proto server client agent db db-down run clean
+.PHONY: all proto server client agent db db-down run clean package
 
 # ─── Paths ────────────────────────────────────────────────────
 
@@ -94,6 +94,30 @@ db-reset:
 	elif command -v podman >/dev/null 2>&1; then \
 		podman compose -f deployments/docker-compose.yml down -v && podman compose -f deployments/docker-compose.yml up -d; \
 	else echo "Error: neither docker nor podman found."; exit 1; fi
+
+# ─── Package (release bundle) ────────────────────────────────
+
+RELEASE_DIR := release
+
+package: server client-release
+	@echo "[*] Packaging release bundle..."
+	@cp $(SERVER_BIN) $(RELEASE_DIR)/teamserver
+	@chmod +x $(RELEASE_DIR)/teamserver $(RELEASE_DIR)/apex-client
+	@cp deployments/docker-compose.yml $(RELEASE_DIR)/docker-compose.yml
+	@rm -rf $(RELEASE_DIR)/migrations
+	@mkdir -p $(RELEASE_DIR)/migrations
+	@cp migrations/*.sql $(RELEASE_DIR)/migrations/
+	@rm -rf $(RELEASE_DIR)/profiles
+	@mkdir -p $(RELEASE_DIR)/profiles
+	@cp profiles/*.yaml $(RELEASE_DIR)/profiles/
+	@rm -rf $(RELEASE_DIR)/agent
+	@mkdir -p $(RELEASE_DIR)/agent
+	@cp agent/Makefile agent/*.c agent/*.h $(RELEASE_DIR)/agent/
+	@rm -rf $(RELEASE_DIR)/bofs
+	@cp -r bofs $(RELEASE_DIR)/bofs
+	@echo "[+] Release bundle ready in $(RELEASE_DIR)/"
+	@echo "    Contents:"
+	@ls -1 $(RELEASE_DIR)/ | sed 's/^/      /'
 
 # ─── Clean ────────────────────────────────────────────────────
 
