@@ -1,0 +1,44 @@
+name: "cloudflare"
+description: "Mimics Cloudflare API and CDN traffic - Zone management, trace endpoints"
+sleep:
+  interval: 45
+  jitter: 15
+http:
+  get:
+    uri: ["/api/v4/zones", "/cdn-cgi/trace", "/cdn-cgi/rum", "/api/v4/accounts/me"]
+    headers:
+      cf-access-client-id: ""
+      cf-access-client-secret: ""
+      X-Auth-Email: "user@example.com"
+      X-Auth-Key: "********"
+    client:
+      metadata:
+        header: "Cookie"
+        prepend: "session="
+        base64: true
+      output:
+        base64: true
+    server:
+      output:
+        content_type: "application/json"
+        prepend: ""
+        append: ""
+  post:
+    uri: ["/api/v4/zones", "/api/v4/dns_records"]
+    headers:
+      cf-access-client-id: ""
+      Content-Type: "application/json"
+    client:
+      metadata:
+        header: "Cookie"
+        base64: true
+      output:
+        base64: true
+    server:
+      output:
+        content_type: "application/json"
+user_agents:
+  - "Cloudflare-Workers"
+  - "Mozilla/5.0 (compatible; Cloudflare-Traffic-Manager/1.0)"
+  - "cloudflare-terraform/0.14.0"
+  - "wrangler/3.0.0"
