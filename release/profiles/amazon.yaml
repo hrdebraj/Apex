@@ -1,0 +1,44 @@
+name: "amazon"
+description: "Mimics Amazon Web Services traffic - EC2, CloudWatch, SDK API calls"
+sleep:
+  interval: 90
+  jitter: 25
+http:
+  get:
+    uri: ["/api/v1/ec2/status", "/api/metrics", "/api/v1/cloudwatch/describe", "/api/v1/regions"]
+    headers:
+      X-Amz-Date: "20240312T120000Z"
+      X-Amz-Content-Sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      Content-Type: "application/x-amz-json-1.1"
+    client:
+      metadata:
+        header: "Cookie"
+        prepend: "session="
+        base64: true
+      output:
+        base64: true
+    server:
+      output:
+        content_type: "application/x-amz-json-1.1"
+        prepend: ""
+        append: ""
+  post:
+    uri: ["/api/v1/ec2/describe-instances", "/api/v1/cloudwatch/put-metric-data"]
+    headers:
+      X-Amz-Date: "20240312T120000Z"
+      X-Amz-Target: "EC2_20160315.DescribeInstances"
+      Content-Type: "application/x-amz-json-1.1"
+    client:
+      metadata:
+        header: "Cookie"
+        base64: true
+      output:
+        base64: true
+    server:
+      output:
+        content_type: "application/x-amz-json-1.1"
+user_agents:
+  - "aws-sdk-go/1.44.0 (go1.19.2; linux; amd64)"
+  - "Boto3/1.26.0 Python/3.10.0 Linux/5.15.0-1022-aws"
+  - "aws-cli/2.9.0 Python/3.11.0 Linux/5.15.0-1022-aws exe/x86_64.ubuntu.22"
+  - "aws-sdk-java/1.12.0 Linux/5.15.0-1022-aws OpenJDK_64-Bit_Server_VM/17.0.4"

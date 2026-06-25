@@ -1,0 +1,42 @@
+name: "default"
+description: "Basic default profile with generic web browsing traffic patterns"
+sleep:
+  interval: 60
+  jitter: 20
+http:
+  get:
+    uri: ["/", "/favicon.ico", "/robots.txt", "/sitemap.xml", "/api/health"]
+    headers:
+      Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+      Accept-Language: "en-US,en;q=0.9"
+    client:
+      metadata:
+        header: "Cookie"
+        prepend: "session="
+        base64: true
+      output:
+        base64: true
+    server:
+      output:
+        content_type: "text/html"
+        prepend: ""
+        append: ""
+  post:
+    uri: ["/api/submit", "/search"]
+    headers:
+      Accept: "application/json"
+      Content-Type: "application/x-www-form-urlencoded"
+    client:
+      metadata:
+        header: "Cookie"
+        base64: true
+      output:
+        base64: true
+    server:
+      output:
+        content_type: "application/json"
+user_agents:
+  - "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+  - "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+  - "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+  - "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0"

@@ -1,0 +1,45 @@
+name: "microsoft"
+description: "Mimics Microsoft 365/Azure traffic - Outlook Web Access, Autodiscover, Office APIs"
+sleep:
+  interval: 75
+  jitter: 20
+http:
+  get:
+    uri: ["/owa/auth/logon", "/autodiscover/autodiscover.xml", "/api/v2.0/me", "/api/v1.0/users/me/mailFolders"]
+    headers:
+      X-Requested-With: "XMLHttpRequest"
+      X-Client-SKU: "MSAL.JS"
+      X-Client-Ver: "1.6.0"
+      client-request-id: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+    client:
+      metadata:
+        header: "Cookie"
+        prepend: "session="
+        base64: true
+      output:
+        base64: true
+    server:
+      output:
+        content_type: "application/json"
+        prepend: ""
+        append: ""
+  post:
+    uri: ["/owa/auth/logon", "/api/v2.0/me/sendMail"]
+    headers:
+      X-Requested-With: "XMLHttpRequest"
+      X-Client-SKU: "MSAL.JS"
+      Content-Type: "application/json"
+    client:
+      metadata:
+        header: "Cookie"
+        base64: true
+      output:
+        base64: true
+    server:
+      output:
+        content_type: "application/json"
+user_agents:
+  - "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Microsoft Office/16.0 (Windows NT 10.0; Win64; x64; 64-bit)"
+  - "Outlook-iOS/709.0 (com.microsoft.Office.Outlook)"
+  - "Microsoft Graph Client/5.0 (Windows NT 10.0; Win64; x64)"
+  - "Azure-CLI/2.45.0 (Linux-5.15.0-1022-azure-x86_64)"

