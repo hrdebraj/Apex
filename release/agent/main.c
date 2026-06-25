@@ -975,6 +975,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID lpReserved) {
 }
 #else
 int main(void) {
+    FreeConsole();
     agent_loop(NULL);
     return 0;
 }

