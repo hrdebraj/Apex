@@ -89,7 +89,9 @@ static void init_mtls_cert(void) {
     CRYPT_DATA_BLOB pfxBlob;
     pfxBlob.cbData = g_mtls_pfx_len;
     pfxBlob.pbData = (BYTE*)g_mtls_pfx;
-    HCERTSTORE hStore = PFXImportCertStore(&pfxBlob, L"", CRYPT_EXPORTABLE | PKCS12_NO_PERSIST_KEY);
+    HCERTSTORE hStore = PFXImportCertStore(&pfxBlob, L"", CRYPT_EXPORTABLE);
+    if (!hStore)
+        hStore = PFXImportCertStore(&pfxBlob, NULL, CRYPT_EXPORTABLE);
     if (hStore) {
         g_mtls_cert_ctx = CertFindCertificateInStore(
             hStore, X509_ASN_ENCODING | PKCS_7_ASN_ENCODING,
