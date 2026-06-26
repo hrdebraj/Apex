@@ -6,7 +6,7 @@ Pre-built binaries for Linux x86_64 with everything needed to run.
 
 ```bash
 # 1. Extract
-unzip apex-c2-v1.0.0-linux-amd64.zip
+unzip apex-c2-v2.0.0-linux-amd64.zip
 cd apex-c2
 
 # 2. Start everything (checks deps, starts DB, launches teamserver)
@@ -71,7 +71,7 @@ To build a distributable zip:
 
 ```bash
 make package
-cd release && zip -r ../apex-c2-v1.0.0-linux-amd64.zip .
+cd release && zip -r ../apex-c2-v2.0.0-linux-amd64.zip .
 ```
 
 ## Security
