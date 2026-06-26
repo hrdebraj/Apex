@@ -1,9 +1,14 @@
+import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 import { useAuthStore } from "../stores/authStore";
 
 const getBaseURL = () => {
   const addr = useAuthStore.getState().serverAddr;
   if (addr.startsWith("http")) return addr;
   return `https://${addr}`;
+};
+
+const FETCH_OPTS = {
+  danger: { acceptInvalidCerts: true, acceptInvalidHostnames: true },
 };
 
 class ApiClient {
@@ -20,10 +25,11 @@ class ApiClient {
 
   async request<T>(method: string, path: string, body?: unknown): Promise<T> {
     const url = `${getBaseURL()}${path}`;
-    const res = await fetch(url, {
+    const res = await tauriFetch(url, {
       method,
       headers: this.getHeaders(),
       body: body ? JSON.stringify(body) : undefined,
+      ...FETCH_OPTS,
     });
 
     if (res.status === 401) {
@@ -52,10 +58,11 @@ class ApiClient {
     const headers: Record<string, string> = {};
     const token = useAuthStore.getState().token;
     if (token) headers["Authorization"] = `Bearer ${token}`;
-    const res = await fetch(url, {
+    const res = await tauriFetch(url, {
       method: "POST",
       headers,
       body: formData,
+      ...FETCH_OPTS,
     });
     if (res.status === 401) {
       useAuthStore.getState().logout();
@@ -72,36 +79,63 @@ class ApiClient {
     return this.request<T>("DELETE", path);
   }
 
-  connectSSE(onEvent: (type: string, data: any) => void): EventSource {
+  connectSSE(onEvent: (type: string, data: any) => void): { close: () => void } {
     const token = useAuthStore.getState().token;
-    const url = token ? `${getBaseURL()}/api/events?token=${encodeURIComponent(token)}` : `${getBaseURL()}/api/events`;
-    const es = new EventSource(url);
+    const url = token
+      ? `${getBaseURL()}/api/events?token=${encodeURIComponent(token)}`
+      : `${getBaseURL()}/api/events`;
 
-    es.addEventListener("connected", () => {
-      console.log("[SSE] Connected to team server events");
-    });
+    let aborted = false;
 
-    es.addEventListener("agent:registered", (e) => {
-      onEvent("agent:registered", JSON.parse(e.data));
-    });
+    const connect = async () => {
+      if (aborted) return;
+      try {
+        const res = await tauriFetch(url, { ...FETCH_OPTS });
+        const reader = res.body?.getReader();
+        if (!reader) return;
 
-    es.addEventListener("agent:checked_in", (e) => {
-      onEvent("agent:checked_in", JSON.parse(e.data));
-    });
+        const decoder = new TextDecoder();
+        let buffer = "";
 
-    es.addEventListener("agent:disconnected", (e) => {
-      onEvent("agent:disconnected", JSON.parse(e.data));
-    });
+        while (!aborted) {
+          const { done, value } = await reader.read();
+          if (done) break;
 
-    es.addEventListener("agent:task_result", (e) => {
-      onEvent("agent:task_result", JSON.parse(e.data));
-    });
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() || "";
 
-    es.onerror = () => {
-      console.warn("[SSE] Connection lost, reconnecting...");
+          let eventType = "";
+          for (const line of lines) {
+            if (line.startsWith("event: ")) {
+              eventType = line.slice(7).trim();
+            } else if (line.startsWith("data: ") && eventType) {
+              try {
+                const data = JSON.parse(line.slice(6));
+                onEvent(eventType, data);
+              } catch {
+                // skip malformed data
+              }
+              eventType = "";
+            }
+          }
+        }
+      } catch {
+        // reconnect after delay
+      }
+
+      if (!aborted) {
+        setTimeout(connect, 3000);
+      }
     };
 
-    return es;
+    connect();
+
+    return {
+      close: () => {
+        aborted = true;
+      },
+    };
   }
 }
 

@@ -9,7 +9,7 @@ export function useSSE() {
   const addAgent = useAgentStore((s) => s.addAgent);
   const updateAgent = useAgentStore((s) => s.updateAgent);
   const addTaskResult = useTaskResultStore((s) => s.addResult);
-  const esRef = useRef<EventSource | null>(null);
+  const esRef = useRef<{ close: () => void } | null>(null);
 
   useEffect(() => {
     if (!isAuthenticated) return;
