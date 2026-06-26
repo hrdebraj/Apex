@@ -23,10 +23,11 @@ type ServerConfig struct {
 }
 
 type TLSConfig struct {
-	Enabled  bool   `yaml:"enabled"`
-	CertFile string `yaml:"cert_file"`
-	KeyFile  string `yaml:"key_file"`
-	CAFile   string `yaml:"ca_file"`
+	Enabled    bool   `yaml:"enabled"`
+	CertFile   string `yaml:"cert_file"`
+	KeyFile    string `yaml:"key_file"`
+	CAFile     string `yaml:"ca_file"`
+	MutualTLS  bool   `yaml:"mutual_tls"`
 }
 
 type DatabaseConfig struct {
@@ -87,6 +88,10 @@ func setDefaults(cfg *Config) {
 	}
 	if cfg.Server.HTTPAddr == "" {
 		cfg.Server.HTTPAddr = "0.0.0.0:8443"
+	}
+	// TLS enabled by default — never expose the API over plaintext
+	if !cfg.Server.TLS.Enabled && cfg.Server.TLS.CertFile == "" && cfg.Server.TLS.KeyFile == "" {
+		cfg.Server.TLS.Enabled = true
 	}
 	if cfg.Database.Postgres.Port == 0 {
 		cfg.Database.Postgres.Port = 5432

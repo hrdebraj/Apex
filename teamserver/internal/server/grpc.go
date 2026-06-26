@@ -31,6 +31,9 @@ type Server struct {
 	http     *http.Server
 	listener net.Listener
 
+	tlsCert string
+	tlsKey  string
+
 	Auth      *auth.Service
 	Agents    *agents.Manager
 	Listeners *listeners.Manager
@@ -92,10 +95,27 @@ func New(cfg *config.Config, db *pgxpool.Pool, rdb *redis.Client) (*Server, erro
 		IdleTimeout:  120 * time.Second,
 	}
 
+	var certPath, keyPath string
+	if cfg.Server.TLS.Enabled {
+		var err error
+		certPath, keyPath, err = ensureServerCerts(cfg.Server.TLS)
+		if err != nil {
+			return nil, fmt.Errorf("tls setup: %w", err)
+		}
+
+		tlsConfig, err := buildTLSConfig(cfg.Server.TLS)
+		if err != nil {
+			return nil, fmt.Errorf("tls config: %w", err)
+		}
+		httpServer.TLSConfig = tlsConfig
+	}
+
 	srv := &Server{
 		cfg:       cfg,
 		grpc:      grpcServer,
 		http:      httpServer,
+		tlsCert:   certPath,
+		tlsKey:    keyPath,
 		Auth:      authSvc,
 		Agents:    agentMgr,
 		Listeners: listenerMgr,
@@ -121,7 +141,25 @@ func (s *Server) StartGRPC() error {
 }
 
 func (s *Server) StartHTTP() error {
-	log.Info().Str("addr", s.cfg.Server.HTTPAddr).Msg("HTTP API server listening")
+	if s.tlsCert != "" && s.tlsKey != "" {
+		proto := "HTTPS"
+		if s.cfg.Server.TLS.MutualTLS {
+			proto = "HTTPS+mTLS"
+		}
+		log.Info().
+			Str("addr", s.cfg.Server.HTTPAddr).
+			Str("proto", proto).
+			Msg("API server listening")
+		err := s.http.ListenAndServeTLS(s.tlsCert, s.tlsKey)
+		if err != nil && err != http.ErrServerClosed {
+			return fmt.Errorf("https listen: %w", err)
+		}
+		return nil
+	}
+
+	log.Warn().
+		Str("addr", s.cfg.Server.HTTPAddr).
+		Msg("API server listening (plaintext HTTP — set tls.enabled=true in config)")
 	err := s.http.ListenAndServe()
 	if err != nil && err != http.ErrServerClosed {
 		return fmt.Errorf("http listen: %w", err)
