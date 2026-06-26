@@ -15,7 +15,9 @@ function CreateListenerModal({ onClose, onCreate }: {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
-  const handleCreate = async () => {
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (loading) return;
     setLoading(true);
     setError("");
     try {
@@ -23,7 +25,7 @@ function CreateListenerModal({ onClose, onCreate }: {
         name: name || `${protocol}-listener`,
         protocol,
         bind_address: bindAddr,
-        bind_port: parseInt(port),
+        bind_port: parseInt(port) || 8080,
       });
       onCreate({
         id: res.id,
@@ -36,8 +38,9 @@ function CreateListenerModal({ onClose, onCreate }: {
         createdAt: new Date().toISOString(),
       });
       onClose();
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setError(msg || "Request failed — check teamserver connection");
     } finally {
       setLoading(false);
     }
@@ -45,7 +48,7 @@ function CreateListenerModal({ onClose, onCreate }: {
 
   return (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={onClose}>
-      <div className="apex-card p-6 w-full max-w-md space-y-4" onClick={(e) => e.stopPropagation()}>
+      <form onSubmit={handleSubmit} className="apex-card p-6 w-full max-w-md space-y-4" onClick={(e) => e.stopPropagation()}>
         <h3 className="text-lg font-semibold text-apex-text">New Listener</h3>
 
         <div>
@@ -82,17 +85,21 @@ function CreateListenerModal({ onClose, onCreate }: {
         </div>
 
         {error && (
-          <div className="text-xs text-apex-danger bg-apex-danger/10 px-3 py-2 rounded">{error}</div>
+          <div className="text-xs text-apex-danger bg-apex-danger/10 px-3 py-2 rounded break-all">{error}</div>
         )}
 
         <div className="flex justify-end gap-2 pt-2">
-          <button onClick={onClose} className="apex-btn-ghost">Cancel</button>
-          <button onClick={handleCreate} disabled={loading} className="apex-btn-primary flex items-center gap-2">
+          <button type="button" onClick={onClose} className="apex-btn-ghost">Cancel</button>
+          <button
+            type="submit"
+            disabled={loading}
+            className="apex-btn-primary flex items-center gap-2"
+          >
             {loading && <Loader2 className="w-3 h-3 animate-spin" />}
             Create
           </button>
         </div>
-      </div>
+      </form>
     </div>
   );
 }
