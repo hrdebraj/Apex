@@ -165,7 +165,8 @@ func (h *PayloadHandler) Generate(w http.ResponseWriter, r *http.Request) {
 	if c2Port <= 0 {
 		c2Port = 8080
 	}
-	useHTTPS := l.Protocol() == listeners.ProtocolHTTPS
+	useHTTPS := l.Protocol() == listeners.ProtocolHTTPS || l.Protocol() == listeners.ProtocolMTLS
+	useMTLS := l.Protocol() == listeners.ProtocolMTLS
 
 	platform := builder.Platform(strings.ToLower(req.Platform))
 	if platform == "" {
@@ -221,7 +222,7 @@ func (h *PayloadHandler) Generate(w http.ResponseWriter, r *http.Request) {
 		Str("format", req.OutputFormat).
 		Msg("Building agent payload")
 
-	b64, filename, err := builder.BuildBase64(h.agentDir, platform, req.OutputFormat, c2Host, c2Port, useHTTPS, evasion, posixEvasion)
+	b64, filename, err := builder.BuildBase64(h.agentDir, platform, req.OutputFormat, c2Host, c2Port, useHTTPS, useMTLS, evasion, posixEvasion)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "build failed: "+err.Error())
 		return
