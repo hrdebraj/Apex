@@ -534,7 +534,26 @@ paths:
                   - `agent:registered` — new agent registered
                   - `agent:checked_in` — agent callback received
                   - `agent:disconnected` — agent went offline
-                  - `agent:task_result` — task output received
+                  - `agent:task_result` — task output (see TaskResult schema)
+
+                  The `agent:task_result` event data follows the TaskResult schema:
+              examples:
+                task_result:
+                  value: |
+                    event: agent:task_result
+                    data: {"task_id":"...","agent_id":"...","output":"...","success":true}
+      callbacks:
+        taskResult:
+          '{$request.query.token}':
+            post:
+              requestBody:
+                content:
+                  application/json:
+                    schema:
+                      $ref: "#/components/schemas/TaskResult"
+              responses:
+                "200":
+                  description: Event consumed
 
 components:
   securitySchemes:
