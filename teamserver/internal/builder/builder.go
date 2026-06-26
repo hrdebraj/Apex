@@ -101,7 +101,9 @@ func boolToFlag(b bool) string {
 // authentication. The PFX bytes are written as a C header file that gets
 // compiled into the agent binary. Returns cleanup function.
 func generateAgentPFX(agentDir string) (func(), error) {
-	headerPath := filepath.Join(agentDir, "include", "mtls_cert.h")
+	includeDir := filepath.Join(agentDir, "include")
+	os.MkdirAll(includeDir, 0755)
+	headerPath := filepath.Join(includeDir, "mtls_cert.h")
 
 	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -151,7 +153,8 @@ func generateAgentPFX(agentDir string) (func(), error) {
 		"-out", pfxPath,
 		"-inkey", keyPath,
 		"-in", certPath,
-		"-passout", "pass:")
+		"-passout", "pass:",
+		"-legacy")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		os.RemoveAll(tmpDir)
 		return nil, fmt.Errorf("openssl pkcs12: %w\n%s", err, out)
