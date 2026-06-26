@@ -295,6 +295,14 @@ static int http_post(const char *host, int port, int use_https, const char *path
     }
     WCHAR hdr_wide[640]; ascii_to_wide(hdr_narrow, hdr_wide, 640);
 
+    if (use_https) {
+        DWORD secFlags = SECURITY_FLAG_IGNORE_UNKNOWN_CA |
+                         SECURITY_FLAG_IGNORE_CERT_DATE_INVALID |
+                         SECURITY_FLAG_IGNORE_CERT_CN_INVALID |
+                         SECURITY_FLAG_IGNORE_CERT_WRONG_USAGE;
+        WinHttpSetOption(hReq, WINHTTP_OPTION_SECURITY_FLAGS, &secFlags, sizeof(secFlags));
+    }
+
     if (!WinHttpSendRequest(hReq, hdr_wide, (DWORD)-1L, (LPVOID)body, (DWORD)body_len, (DWORD)body_len, 0)) {
         WinHttpCloseHandle(hReq); WinHttpCloseHandle(hConn); WinHttpCloseHandle(hSession); return -1;
     }
