@@ -26,10 +26,11 @@ export default function LoginPage() {
       });
       navigate("/dashboard");
     } catch (err: any) {
-      if (err.message === "Failed to fetch") {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes("Failed to fetch") || msg.includes("connect")) {
         setError("Cannot connect to team server. Is it running?");
       } else {
-        setError(err.message || "Authentication failed");
+        setError(msg || "Authentication failed");
       }
     } finally {
       setLoading(false);
