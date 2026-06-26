@@ -1,6 +1,15 @@
-# Apex C2 Framework - Release
+# Apex C2 Framework - Release v2.1.0
 
 Pre-built binaries for Linux x86_64 with everything needed to run.
+
+## What's New (v2.1.0)
+
+- **PPID Spoofing** — child processes spawn under `explorer.exe` to defeat EDR parent-chain analysis. Toggle at build time or runtime (`ppidspoof on/off`)
+- **Malleable C2 Profiles** — YAML-based profiles inject `User-Agent` and beacon URI at compile time. 7 pre-built profiles (Amazon, Microsoft, Google, Cloudflare, Slack, GitHub, default)
+- **PE TimeDateStamp Backdating** — builder patches on-disk PE timestamp to a random 2019-2023 date; runtime stomp randomizes via `__rdtsc()`
+- **Windows Persistence** — `persist registry` (HKCU Run key), `persist schtask` (logon-triggered Scheduled Task), `persist remove` (cleanup both)
+- **Agent Builder UI** — rebalanced two-column OPSEC layout, PPID Spoofing toggle with description, malleable profile selector
+- **mTLS + Evasion fix** — Ekko ROP sleep disabled by default (`SLEEP_METHOD=0`) as it causes agent hang with mTLS; all other evasion features work correctly with mTLS
 
 ## Quick Start
 

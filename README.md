@@ -138,6 +138,9 @@ A modern, modular Command & Control framework built for red team operations and 
 - **Synthetic Stack Frames** — fabricated call chains during sleep (defeats Hunt-Sleeping-Beacons)
 - **BlockDLLs** — block non-Microsoft DLLs in child processes (runtime toggle)
 - **Argument Spoofing** — decoy command-line arguments in PEB (runtime toggle)
+- **PPID Spoofing** — spawn child processes under explorer.exe to defeat parent-chain analysis (runtime toggle)
+- **PE TimeDateStamp Backdating** — builder patches on-disk timestamp to plausible 2019-2023 date; runtime stomp uses randomized historical value
+- **Windows Persistence** — Registry Run key, Scheduled Task (at logon), with removal commands
 - In-memory BOF (Beacon Object File) loader with full Cobalt Strike BeaconAPI
 - **Token manipulation**: steal_token, make_token, rev2self, getprivs, runas
 - **Keylogger**: low-level keyboard hook with start/stop/dump commands
@@ -457,6 +460,10 @@ apex/
 | `runas <user> <pass> <cmd>`          | Run command as another user (Windows)    |
 | `blockdlls <on\|off>`                | Block non-MS DLLs in child processes     |
 | `argspoof <on\|off>`                 | Spoof process arguments (PEB overwrite)  |
+| `ppidspoof <on\|off>`                | PPID spoof child processes under explorer.exe |
+| `persist registry`                   | Create HKCU Run key persistence          |
+| `persist schtask`                    | Create logon-triggered Scheduled Task    |
+| `persist remove`                     | Remove both registry and schtask entries |
 | `exit`                               | Terminate agent                          |
 
 ---
@@ -480,7 +487,7 @@ apex/
 | `pic_loader.c`  | PIC reflective PE loader: PEB walk, export parsing, PE mapper   |
 | `gen_shellcode.c`| Host combiner: patches offset marker, concatenates stub + DLL  |
 
-**Compile-time flags**: `USE_MTLS`, `ENABLE_ETW_PATCH`, `ENABLE_AMSI_PATCH`, `ENABLE_SLEEP_ENCRYPT`, `ENABLE_UNHOOK`, `ENABLE_INDIRECT_SYSCALL`, `ENABLE_NT_PROCESS`, `ENABLE_HEAP_ENCRYPT`, `ENABLE_PE_STOMP`, `ENABLE_UDRL`, `ENABLE_DRIP_LOAD`, `ENABLE_RET_ADDR_SPOOF`, `ENABLE_SYNTHETIC_FRAMES`, `ENABLE_BLOCK_DLLS`, `ENABLE_ARG_SPOOF`
+**Compile-time flags**: `USE_MTLS`, `ENABLE_ETW_PATCH`, `ENABLE_AMSI_PATCH`, `ENABLE_SLEEP_ENCRYPT`, `ENABLE_UNHOOK`, `ENABLE_INDIRECT_SYSCALL`, `ENABLE_NT_PROCESS`, `ENABLE_HEAP_ENCRYPT`, `ENABLE_PE_STOMP`, `ENABLE_UDRL`, `ENABLE_DRIP_LOAD`, `ENABLE_RET_ADDR_SPOOF`, `ENABLE_SYNTHETIC_FRAMES`, `ENABLE_BLOCK_DLLS`, `ENABLE_ARG_SPOOF`, `ENABLE_PPID_SPOOF`, `C2_USER_AGENT`, `C2_URI`
 
 **Output formats**: EXE, DLL, **PIC Shellcode** (.bin), Service EXE
 
@@ -539,10 +546,12 @@ PayloadHandler.Generate()
   ▼
 builder.BuildBase64()
   │  ResolveAgentDir()
-  │  Set env vars: C2_HOST, C2_PORT, platform evasion flags
+  │  Load malleable profile → inject C2_USER_AGENT, C2_URI
+  │  Set env vars: C2_HOST, C2_PORT, evasion flags, PPID_SPOOF
   │  exec: make -C agent/ clean
   │  exec: make -C agent/ exe|dll|shellcode|linux-elf|macos-macho
   │  For shellcode: DLL build → PIC stub compile → gen_shellcode combine
+  │  Patch PE TimeDateStamp to random 2019-2023 date (Windows)
   │  Read output → base64 encode
   ▼
 Response → Client downloads binary
@@ -661,6 +670,11 @@ The client includes a built-in argument packer compatible with `BeaconDataParse`
 | Synthetic Stack Frames  | `ENABLE_SYNTHETIC_FRAMES`  | Fake RtlUserThreadStart→BaseThreadInitThunk chain during sleep            |
 | BlockDLLs               | `ENABLE_BLOCK_DLLS`        | Blocks non-Microsoft DLLs in child processes via mitigation policy        |
 | Argument Spoofing       | `ENABLE_ARG_SPOOF`         | Decoy args in PEB; real command written after CREATE_SUSPENDED            |
+| PPID Spoofing           | `ENABLE_PPID_SPOOF`       | Spawns child processes under explorer.exe; defeats parent-chain analysis  |
+| PE TimeDateStamp Backdate | (builder + runtime)      | Builder patches on-disk timestamp to 2019-2023; runtime stomp uses `__rdtsc()` |
+| Registry Persistence    | `persist registry`         | HKCU `Software\Microsoft\Windows\CurrentVersion\Run` key                  |
+| Scheduled Task Persist  | `persist schtask`          | Creates logon-triggered schtask via `schtasks.exe /CREATE`                |
+| Malleable C2 Profile    | `C2_USER_AGENT`, `C2_URI` | Profile-driven User-Agent header and beacon URI at compile time           |
 | Token Manipulation      | (always on)                | steal_token, make_token, rev2self, getprivs, runas                        |
 | ECDH-P256 + AES-256-GCM | (always on)                | Key exchange at first check-in, GCM encryption for all C2 traffic         |
 | mTLS Client Cert        | `USE_MTLS`                 | Embeds PFX in binary via PFXImportCertStore; presents via WinHTTP         |
@@ -691,7 +705,7 @@ The client includes a built-in argument packer compatible with `BeaconDataParse`
 
 ## Malleable C2 Profiles
 
-Profiles shape agent HTTP traffic to mimic legitimate services. Stored as YAML in `profiles/`. Upload via the Modules page or place files directly in the directory.
+Profiles shape agent HTTP traffic to mimic legitimate services. Stored as YAML in `profiles/`. Upload via the Modules page or place files directly in the directory. When a profile is selected at build time, the builder injects the profile's `user_agent` string and `uri` path as compile-time defines (`C2_USER_AGENT`, `C2_URI`), so the agent's HTTP requests match the profile's traffic pattern without runtime configuration.
 
 ### Pre-built Profiles
 
