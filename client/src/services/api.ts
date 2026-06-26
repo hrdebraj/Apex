@@ -18,6 +18,25 @@ interface MtlsResponse {
   body: string;
 }
 
+async function doFetch(
+  url: string,
+  method: string,
+  headers: Record<string, string>,
+  body?: string,
+): Promise<{ status: number; ok: boolean; body: string; headers: Record<string, string> }> {
+  const res = await tauriFetch(url, {
+    method,
+    headers,
+    body: body ?? undefined,
+    connectTimeout: 10000,
+    ...FETCH_OPTS,
+  });
+  const resBody = await res.text();
+  const resHeaders: Record<string, string> = {};
+  res.headers.forEach((v, k) => { resHeaders[k] = v; });
+  return { status: res.status, ok: res.ok, body: resBody, headers: resHeaders };
+}
+
 async function apexFetch(
   url: string,
   method: string,
@@ -27,35 +46,26 @@ async function apexFetch(
   const { mtlsEnabled } = useAuthStore.getState();
 
   if (mtlsEnabled) {
-    const resp = await invoke<MtlsResponse>("mtls_fetch", {
-      method,
-      url,
-      headers,
-      body: body ?? null,
-    });
-    return {
-      status: resp.status,
-      ok: resp.status >= 200 && resp.status < 300,
-      body: resp.body,
-      headers: resp.headers,
-    };
+    try {
+      const resp = await invoke<MtlsResponse>("mtls_fetch", {
+        method,
+        url,
+        headers,
+        body: body ?? null,
+      });
+      return {
+        status: resp.status,
+        ok: resp.status >= 200 && resp.status < 300,
+        body: resp.body,
+        headers: resp.headers,
+      };
+    } catch {
+      useAuthStore.getState().setMtls(false);
+      return doFetch(url, method, headers, body);
+    }
   }
 
-  const res = await tauriFetch(url, {
-    method,
-    headers,
-    body: body ?? undefined,
-    ...FETCH_OPTS,
-  });
-  const resBody = await res.text();
-  const resHeaders: Record<string, string> = {};
-  res.headers.forEach((v, k) => { resHeaders[k] = v; });
-  return {
-    status: res.status,
-    ok: res.ok,
-    body: resBody,
-    headers: resHeaders,
-  };
+  return doFetch(url, method, headers, body);
 }
 
 class ApiClient {
