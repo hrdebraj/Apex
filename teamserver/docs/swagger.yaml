@@ -1,0 +1,1014 @@
+openapi: 3.0.3
+info:
+  title: Apex C2 Team Server API
+  description: |
+    REST API for the Apex Command & Control framework.
+
+    All endpoints under `/api` except `/api/auth/login` require a valid JWT
+    token passed via `Authorization: Bearer <token>` header or `?token=<token>`
+    query parameter.
+
+    The API runs over HTTPS by default (TLS 1.2+, ECDHE+AES-GCM).
+    When `mutual_tls` is enabled, clients must present a valid certificate.
+  version: 1.0.0
+  contact:
+    name: Apex C2
+  license:
+    name: Private
+
+servers:
+  - url: https://localhost:8443
+    description: Local teamserver (default)
+
+tags:
+  - name: Auth
+    description: Authentication and operator management
+  - name: Listeners
+    description: C2 listener lifecycle management
+  - name: Agents
+    description: Registered agent enumeration and removal
+  - name: Tasks
+    description: Task creation and retrieval for agents
+  - name: Credentials
+    description: Harvested credential vault
+  - name: Profiles
+    description: C2 communication profile management
+  - name: Payloads
+    description: Agent payload generation and BOF management
+  - name: Events
+    description: Real-time Server-Sent Events stream
+
+security:
+  - BearerAuth: []
+
+paths:
+  # ── Auth ─────────────────────────────────────────────────────
+  /api/auth/login:
+    post:
+      tags: [Auth]
+      summary: Authenticate operator
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: JWT token and operator info
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoginResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/auth/logout:
+    post:
+      tags: [Auth]
+      summary: Invalidate current session
+      responses:
+        "200":
+          description: Logged out
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatusOK"
+
+  /api/auth/me:
+    get:
+      tags: [Auth]
+      summary: Get current operator info
+      responses:
+        "200":
+          description: Operator details from JWT claims
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Operator"
+
+  /api/operators:
+    post:
+      tags: [Auth]
+      summary: Create a new operator (admin only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateOperatorRequest"
+      responses:
+        "201":
+          description: Operator created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Operator"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  # ── Listeners ────────────────────────────────────────────────
+  /api/listeners:
+    get:
+      tags: [Listeners]
+      summary: List all listeners
+      responses:
+        "200":
+          description: Array of listeners
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Listener"
+    post:
+      tags: [Listeners]
+      summary: Create a new listener
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateListenerRequest"
+      responses:
+        "201":
+          description: Listener created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Listener"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+  /api/listeners/{id}:
+    get:
+      tags: [Listeners]
+      summary: Get listener details
+      parameters:
+        - $ref: "#/components/parameters/ListenerID"
+      responses:
+        "200":
+          description: Listener details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Listener"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      tags: [Listeners]
+      summary: Delete a listener
+      parameters:
+        - $ref: "#/components/parameters/ListenerID"
+      responses:
+        "200":
+          description: Listener deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatusDeleted"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/listeners/{id}/start:
+    post:
+      tags: [Listeners]
+      summary: Start a listener
+      parameters:
+        - $ref: "#/components/parameters/ListenerID"
+      responses:
+        "200":
+          description: Listener started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Listener"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/listeners/{id}/stop:
+    post:
+      tags: [Listeners]
+      summary: Stop a running listener
+      parameters:
+        - $ref: "#/components/parameters/ListenerID"
+      responses:
+        "200":
+          description: Listener stopped
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Listener"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # ── Agents ───────────────────────────────────────────────────
+  /api/agents:
+    get:
+      tags: [Agents]
+      summary: List all registered agents
+      responses:
+        "200":
+          description: Array of agents
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Agent"
+
+  /api/agents/{id}:
+    get:
+      tags: [Agents]
+      summary: Get agent details
+      parameters:
+        - $ref: "#/components/parameters/AgentID"
+      responses:
+        "200":
+          description: Agent details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Agent"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      tags: [Agents]
+      summary: Remove an agent
+      parameters:
+        - $ref: "#/components/parameters/AgentID"
+      responses:
+        "200":
+          description: Agent removed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatusRemoved"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # ── Tasks ────────────────────────────────────────────────────
+  /api/agents/{agentID}/tasks:
+    post:
+      tags: [Tasks]
+      summary: Queue a task for an agent
+      parameters:
+        - $ref: "#/components/parameters/AgentIDPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTaskRequest"
+      responses:
+        "201":
+          description: Task queued
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Task"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    get:
+      tags: [Tasks]
+      summary: List tasks for an agent
+      parameters:
+        - $ref: "#/components/parameters/AgentIDPath"
+      responses:
+        "200":
+          description: Array of tasks
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Task"
+
+  # ── Credentials ──────────────────────────────────────────────
+  /api/credentials:
+    get:
+      tags: [Credentials]
+      summary: List all harvested credentials
+      responses:
+        "200":
+          description: Array of credentials
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Credential"
+    post:
+      tags: [Credentials]
+      summary: Add a credential manually
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AddCredentialRequest"
+      responses:
+        "201":
+          description: Credential stored
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Credential"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+  /api/credentials/{id}:
+    delete:
+      tags: [Credentials]
+      summary: Delete a credential
+      parameters:
+        - $ref: "#/components/parameters/CredentialID"
+      responses:
+        "204":
+          description: Credential deleted
+
+  # ── Profiles ─────────────────────────────────────────────────
+  /api/profiles:
+    get:
+      tags: [Profiles]
+      summary: List all C2 communication profiles
+      responses:
+        "200":
+          description: Array of profiles
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Profile"
+    post:
+      tags: [Profiles]
+      summary: Upload a new profile (YAML)
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [profile]
+              properties:
+                profile:
+                  type: string
+                  format: binary
+                  description: YAML profile file (.yaml or .yml), max 2MB
+      responses:
+        "200":
+          description: Profile uploaded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Profile"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+  /api/profiles/{name}:
+    get:
+      tags: [Profiles]
+      summary: Get a specific profile
+      parameters:
+        - $ref: "#/components/parameters/ProfileName"
+      responses:
+        "200":
+          description: Profile details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Profile"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      tags: [Profiles]
+      summary: Delete a profile
+      parameters:
+        - $ref: "#/components/parameters/ProfileName"
+      responses:
+        "200":
+          description: Profile deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatusDeleted"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # ── Payloads ─────────────────────────────────────────────────
+  /api/payloads/generate:
+    post:
+      tags: [Payloads]
+      summary: Generate an agent payload
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GeneratePayloadRequest"
+      responses:
+        "200":
+          description: Payload generated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GeneratePayloadResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+  /api/payloads/bofs:
+    get:
+      tags: [Payloads]
+      summary: List uploaded BOFs
+      responses:
+        "200":
+          description: Array of BOF entries
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/BOFEntry"
+    post:
+      tags: [Payloads]
+      summary: Upload a BOF (.o / .obj)
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [bof]
+              properties:
+                bof:
+                  type: string
+                  format: binary
+                  description: BOF object file (.o or .obj), max 10MB
+      responses:
+        "200":
+          description: BOF uploaded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BOFEntry"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+    delete:
+      tags: [Payloads]
+      summary: Delete a BOF
+      parameters:
+        - name: id
+          in: query
+          required: true
+          schema:
+            type: string
+          description: BOF ID to delete
+      responses:
+        "200":
+          description: BOF deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatusDeleted"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/payloads/bofs/{id}/data:
+    get:
+      tags: [Payloads]
+      summary: Download BOF binary data (base64)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: BOF file data
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: string
+                    description: Base64-encoded BOF binary
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # ── Events (SSE) ─────────────────────────────────────────────
+  /api/events:
+    get:
+      tags: [Events]
+      summary: Subscribe to real-time events (SSE)
+      description: |
+        Server-Sent Events stream. Opens a persistent connection and pushes
+        events as they occur. Events include agent registration, check-ins,
+        disconnections, and task results.
+
+        Pass the JWT token via the `token` query parameter since EventSource
+        does not support custom headers.
+      parameters:
+        - name: token
+          in: query
+          schema:
+            type: string
+          description: JWT token (alternative to Authorization header)
+      responses:
+        "200":
+          description: SSE stream opened
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: |
+                  Event types:
+                  - `connected` — initial handshake
+                  - `agent:registered` — new agent registered
+                  - `agent:checked_in` — agent callback received
+                  - `agent:disconnected` — agent went offline
+                  - `agent:task_result` — task output received
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT token from /api/auth/login
+
+  parameters:
+    ListenerID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+
+    AgentID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+
+    AgentIDPath:
+      name: agentID
+      in: path
+      required: true
+      schema:
+        type: string
+
+    CredentialID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+
+    ProfileName:
+      name: name
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Profile filename without .yaml extension
+
+  responses:
+    BadRequest:
+      description: Invalid request
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unauthorized:
+      description: Missing or invalid credentials
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Forbidden:
+      description: Insufficient permissions
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+      required: [error]
+
+    StatusOK:
+      type: object
+      properties:
+        status:
+          type: string
+          example: ok
+
+    StatusDeleted:
+      type: object
+      properties:
+        status:
+          type: string
+          example: deleted
+
+    StatusRemoved:
+      type: object
+      properties:
+        status:
+          type: string
+          example: removed
+
+    # ── Auth ───────────────────────────────────────────────────
+    LoginRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username:
+          type: string
+          example: admin
+        password:
+          type: string
+          format: password
+          example: changeme
+
+    LoginResponse:
+      type: object
+      properties:
+        token:
+          type: string
+          description: JWT bearer token
+        operator:
+          $ref: "#/components/schemas/Operator"
+
+    Operator:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        username:
+          type: string
+        role:
+          type: string
+          enum: [admin, operator, readonly]
+
+    CreateOperatorRequest:
+      type: object
+      required: [username, password, role]
+      properties:
+        username:
+          type: string
+        password:
+          type: string
+          format: password
+        role:
+          type: string
+          enum: [admin, operator, readonly]
+
+    # ── Listeners ──────────────────────────────────────────────
+    Listener:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          example: http-main
+        protocol:
+          type: string
+          enum: [http, https, mtls, dns, tcp, smb]
+        bind_address:
+          type: string
+          example: 0.0.0.0
+        bind_port:
+          type: integer
+          example: 443
+        status:
+          type: string
+          enum: [active, inactive]
+        config:
+          type: object
+          additionalProperties:
+            type: string
+          description: Protocol-specific options (cert_file, key_file, ca_file, etc.)
+
+    CreateListenerRequest:
+      type: object
+      required: [name, protocol, bind_address, bind_port]
+      properties:
+        name:
+          type: string
+        protocol:
+          type: string
+          enum: [http, https, mtls, dns, tcp]
+        bind_address:
+          type: string
+          example: 0.0.0.0
+        bind_port:
+          type: integer
+          example: 443
+        config:
+          type: object
+          additionalProperties:
+            type: string
+
+    # ── Agents ─────────────────────────────────────────────────
+    Agent:
+      type: object
+      properties:
+        id:
+          type: string
+        hostname:
+          type: string
+        username:
+          type: string
+        os:
+          type: string
+          example: windows
+        arch:
+          type: string
+          example: x86_64
+        pid:
+          type: integer
+        process_name:
+          type: string
+        internal_ip:
+          type: string
+        external_ip:
+          type: string
+        sleep:
+          type: integer
+          description: Callback interval in seconds
+        jitter:
+          type: integer
+          description: Jitter percentage (0-100)
+        listener_id:
+          type: string
+        first_seen:
+          type: string
+          format: date-time
+        last_seen:
+          type: string
+          format: date-time
+        alive:
+          type: boolean
+
+    # ── Tasks ──────────────────────────────────────────────────
+    CreateTaskRequest:
+      type: object
+      required: [command]
+      properties:
+        command:
+          type: string
+          description: Command name (shell, ls, ps, upload, download, bof, etc.)
+          example: shell
+        arguments:
+          type: string
+          description: Command arguments
+          example: whoami /all
+
+    Task:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        agent_id:
+          type: string
+        operator_id:
+          type: string
+        command:
+          type: string
+        status:
+          type: string
+          enum: [queued, delivered, completed, failed, cancelled]
+        created_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+
+    TaskResult:
+      type: object
+      properties:
+        task_id:
+          type: string
+        agent_id:
+          type: string
+        output:
+          type: string
+          format: byte
+        success:
+          type: boolean
+        error:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+
+    # ── Credentials ────────────────────────────────────────────
+    Credential:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        agent_id:
+          type: string
+        domain:
+          type: string
+        username:
+          type: string
+        secret:
+          type: string
+        type:
+          type: string
+          enum: [plaintext, ntlm, kerberos, certificate, token]
+        source:
+          type: string
+          description: Tool or module that harvested this credential
+        created_at:
+          type: string
+          format: date-time
+
+    AddCredentialRequest:
+      type: object
+      required: [username, secret]
+      properties:
+        agent_id:
+          type: string
+        domain:
+          type: string
+        username:
+          type: string
+        secret:
+          type: string
+        type:
+          type: string
+          enum: [plaintext, ntlm, kerberos, certificate, token]
+          default: plaintext
+        source:
+          type: string
+
+    # ── Profiles ───────────────────────────────────────────────
+    Profile:
+      type: object
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        sleep:
+          type: integer
+          description: Callback interval in milliseconds
+        jitter:
+          type: integer
+          description: Jitter percentage
+        get_uris:
+          type: array
+          items:
+            type: string
+        post_uris:
+          type: array
+          items:
+            type: string
+        user_agents:
+          type: array
+          items:
+            type: string
+
+    # ── Payloads ───────────────────────────────────────────────
+    GeneratePayloadRequest:
+      type: object
+      required: [platform, listener_id]
+      properties:
+        platform:
+          type: string
+          enum: [windows, linux, macos]
+        output_format:
+          type: string
+          description: "exe, dll, shellcode, service_exe, elf, macho"
+        listener_id:
+          type: string
+        callback_host:
+          type: string
+        callback_port:
+          type: integer
+        profile_name:
+          type: string
+        sleep_obfuscation:
+          type: boolean
+        sleep_method:
+          type: string
+          enum: [ekko, foliage, none]
+        encrypted_shellcode:
+          type: boolean
+        encryption_method:
+          type: string
+        unhook_ntdll:
+          type: boolean
+        etw_patch:
+          type: boolean
+        amsi_patch:
+          type: boolean
+        hardware_breakpoint:
+          type: boolean
+        byovd:
+          type: boolean
+        indirect_syscall:
+          type: boolean
+        syscall_method:
+          type: string
+        nt_process:
+          type: boolean
+        heap_encrypt:
+          type: boolean
+        pe_stomp:
+          type: boolean
+        pe_stomp_mode:
+          type: integer
+          enum: [1, 2, 3]
+          description: "1=DOS-only, 2=full-NT-headers, 3=sledgehammer"
+        pe_stomp_randomise:
+          type: boolean
+        udrl:
+          type: boolean
+          description: User-Defined Reflective Loader
+        drip_load:
+          type: boolean
+          description: Gradual memory allocation
+        ret_addr_spoof:
+          type: boolean
+        synthetic_frames:
+          type: boolean
+        block_dlls:
+          type: boolean
+        arg_spoof:
+          type: boolean
+        bof_ids:
+          type: array
+          items:
+            type: string
+          description: BOF IDs to embed
+        anti_debug:
+          type: boolean
+        proc_mask:
+          type: boolean
+        self_delete:
+          type: boolean
+        env_clean:
+          type: boolean
+        sandbox_check:
+          type: boolean
+
+    GeneratePayloadResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+        payload_base64:
+          type: string
+          description: Base64-encoded payload binary
+        filename:
+          type: string
+
+    BOFEntry:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        size:
+          type: integer
+          format: int64
+        hash:
+          type: string
+          description: SHA256 hash (truncated)
+        uploaded_at:
+          type: string
+          format: date-time
