@@ -12,10 +12,12 @@ interface AuthState {
   token: string | null;
   operator: Operator | null;
   serverAddr: string;
+  mtlsEnabled: boolean;
 
   login: (serverAddr: string, token: string, operator: Operator) => void;
   logout: () => void;
   setServerAddr: (addr: string) => void;
+  setMtls: (enabled: boolean) => void;
 }
 
 export const useAuthStore = create<AuthState>()(
@@ -25,6 +27,7 @@ export const useAuthStore = create<AuthState>()(
       token: null,
       operator: null,
       serverAddr: "localhost:8443",
+      mtlsEnabled: false,
 
       login: (serverAddr, token, operator) =>
         set({ isAuthenticated: true, token, operator, serverAddr }),
@@ -33,6 +36,8 @@ export const useAuthStore = create<AuthState>()(
         set({ isAuthenticated: false, token: null, operator: null }),
 
       setServerAddr: (addr) => set({ serverAddr: addr }),
+
+      setMtls: (enabled) => set({ mtlsEnabled: enabled }),
     }),
     {
       name: "apex-auth",
@@ -41,6 +46,7 @@ export const useAuthStore = create<AuthState>()(
         token: state.token,
         operator: state.operator,
         isAuthenticated: state.isAuthenticated,
+        mtlsEnabled: state.mtlsEnabled,
       }),
     }
   )
