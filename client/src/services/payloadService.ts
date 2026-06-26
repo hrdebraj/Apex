@@ -35,6 +35,7 @@ export interface GeneratePayloadRequest {
   synthetic_frames: boolean;
   block_dlls: boolean;
   arg_spoof: boolean;
+  ppid_spoof: boolean;
   byovd?: boolean;
   bof_ids?: string[];
   // POSIX evasion (Linux/macOS)
