@@ -2,10 +2,8 @@ import { useAuthStore } from "../stores/authStore";
 
 const getBaseURL = () => {
   const addr = useAuthStore.getState().serverAddr;
-  // In development, the team server HTTP API runs on this address
-  // Tauri desktop will connect to the configured server
   if (addr.startsWith("http")) return addr;
-  return `http://${addr}`;
+  return `https://${addr}`;
 };
 
 class ApiClient {

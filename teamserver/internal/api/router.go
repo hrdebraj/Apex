@@ -35,7 +35,7 @@ func NewRouter(a *API) http.Handler {
 	r.Use(chimw.Recoverer)
 	r.Use(chimw.Compress(5))
 	r.Use(cors.Handler(cors.Options{
-		AllowedOrigins:   []string{"http://localhost:1420", "https://localhost:1420", "tauri://localhost"},
+		AllowedOrigins:   []string{"https://localhost:1420", "http://localhost:1420", "tauri://localhost"},
 		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
 		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type"},
 		ExposedHeaders:   []string{"Link"},

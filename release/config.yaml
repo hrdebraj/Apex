@@ -2,10 +2,11 @@ server:
   grpc_addr: "0.0.0.0:50051"
   http_addr: "0.0.0.0:8443"
   tls:
-    enabled: false
-    cert_file: ""
-    key_file: ""
-    ca_file: ""
+    enabled: true
+    cert_file: ""       # leave empty to auto-generate self-signed
+    key_file: ""        # leave empty to auto-generate self-signed
+    ca_file: ""         # set to CA cert path when using mutual_tls
+    mutual_tls: false   # require client certificates (issue #78)
 
 database:
   postgres:

@@ -82,9 +82,16 @@ func main() {
 		}
 	}()
 
+	httpProto := "http"
+	if cfg.Server.TLS.Enabled {
+		httpProto = "https"
+		if cfg.Server.TLS.MutualTLS {
+			httpProto = "https+mtls"
+		}
+	}
 	log.Info().
 		Str("grpc", cfg.Server.GRPCAddr).
-		Str("http", cfg.Server.HTTPAddr).
+		Str("api", httpProto+"://"+cfg.Server.HTTPAddr).
 		Msg("Apex Team Server is online")
 
 	sigCh := make(chan os.Signal, 1)
